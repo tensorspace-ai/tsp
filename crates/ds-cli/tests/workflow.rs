@@ -1,12 +1,12 @@
-//! End-to-end tests for the local half of the workflow: track, commit, status.
+//! End-to-end tests for the pipeline and experiment commands.
 //!
-//! Network transfer is covered separately; everything here runs offline and
-//! pins the behaviours that make the no-clean-filter design work.
+//! The fixture uses Git LFS exactly as a user would — `git lfs track`, then
+//! ordinary `git add` — so these also pin the assumption the whole tool now
+//! rests on: that git and git-lfs handle the data by themselves.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-/// Path to the binary under test, provided by cargo.
 const DS: &str = env!("CARGO_BIN_EXE_ds");
 
 struct Fixture {
@@ -15,24 +15,33 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// A repository with LFS configured, a two-stage pipeline, and one commit.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
+        let f = Self { _dir: dir, root };
+
         for args in [
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "ds@example.test"],
             vec!["config", "user.name", "ds test"],
         ] {
-            assert!(
-                Command::new("git")
-                    .current_dir(&root)
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+            f.git(&args);
         }
-        Self { _dir: dir, root }
+
+        f.write("data/raw.txt", "alpha\nbeta\n");
+        f.write(
+            "params.yaml",
+            "prepare:\n  repeat: 3\ntrain:\n  factor: 2\n",
+        );
+        f.write("ds.yaml", PIPELINE);
+        f.write_exec("scripts/prepare.sh", PREPARE);
+        f.write_exec("scripts/train.sh", TRAIN);
+
+        f.ds_ok(&["init", "--lfs", "data/**", "--lfs", "models/**"]);
+        f.git(&["add", "-A"]);
+        f.git(&["commit", "-qm", "pipeline"]);
+        f
     }
 
     fn ds(&self, args: &[&str]) -> std::process::Output {
@@ -47,7 +56,8 @@ impl Fixture {
         let out = self.ds(args);
         assert!(
             out.status.success(),
-            "ds {args:?} failed: {}",
+            "ds {args:?} failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).into_owned()
@@ -67,166 +77,402 @@ impl Fixture {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    fn write(&self, rel: &str, content: &[u8]) -> PathBuf {
+    fn write(&self, rel: &str, content: &str) {
         let path = self.root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, content).unwrap();
-        path
+    }
+
+    fn write_exec(&self, rel: &str, content: &str) {
+        self.write(rel, content);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.root.join(rel);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn read(&self, rel: &str) -> String {
+        std::fs::read_to_string(self.root.join(rel)).unwrap()
+    }
+
+    fn metrics(&self) -> serde_json::Value {
+        serde_json::from_str(&self.read("metrics.json")).unwrap()
     }
 }
 
-fn payload(n: usize) -> Vec<u8> {
-    (0..n).map(|i| (i % 251) as u8).collect()
-}
+const PIPELINE: &str = r#"
+stages:
+  prepare:
+    desc: Repeat the raw rows
+    cmd: sh scripts/prepare.sh
+    deps:
+      - scripts/prepare.sh
+      - data/raw.txt
+    params:
+      - params.yaml:
+          - prepare.repeat
+    outs:
+      - data/prepared.txt
+  train:
+    cmd: sh scripts/train.sh
+    deps:
+      - scripts/train.sh
+      - data/prepared.txt
+    params:
+      - params.yaml:
+          - train.factor
+    outs:
+      - models/model.txt
+    metrics:
+      - metrics.json:
+          cache: false
+"#;
+
+const PREPARE: &str = r#"#!/bin/sh
+set -e
+mkdir -p data
+n=$(awk '/repeat:/ {print $2}' params.yaml)
+: > data/prepared.txt
+i=0
+while [ "$i" -lt "$n" ]; do
+    cat data/raw.txt >> data/prepared.txt
+    i=$((i + 1))
+done
+"#;
+
+const TRAIN: &str = r#"#!/bin/sh
+set -e
+mkdir -p models
+factor=$(awk '/factor:/ {print $2}' params.yaml)
+lines=$(wc -l < data/prepared.txt | tr -d ' ')
+score=$((lines * factor))
+printf 'model score=%s\n' "$score" > models/model.txt
+printf '{"accuracy": %s, "lines": %s}\n' "$score" "$lines" > metrics.json
+"#;
 
 #[test]
-fn tracked_data_is_committed_as_a_pointer_while_the_worktree_keeps_the_bytes() {
+fn init_configures_lfs_and_the_guard_hook() {
     let f = Fixture::new();
-    let data = payload(200_000);
-    f.write("data/big.bin", &data);
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data"]);
 
-    // Crucially not "AM": the skip-worktree bit hides the working-tree/index
-    // difference, so `git commit -a` cannot replace the pointer with raw data.
-    assert_eq!(f.git(&["status", "--porcelain"]).trim(), "A  data/big.bin");
+    let attributes = f.read(".gitattributes");
+    assert!(attributes.contains("data/**"), "{attributes}");
+    assert!(attributes.contains("filter=lfs"), "{attributes}");
 
-    f.git(&["commit", "-qm", "track"]);
-    let committed = f.git(&["cat-file", "-p", "HEAD:data/big.bin"]);
+    let hook = std::fs::read_to_string(f.root.join(".git/hooks/pre-commit")).unwrap();
+    assert!(hook.contains("ds-guard"), "{hook}");
+
+    // git-lfs owns the transfer hooks; ds must not have replaced them.
+    assert!(f.root.join(".git/hooks/pre-push").exists());
+}
+
+/// The whole premise: data reaches git as a pointer without ds touching it.
+#[test]
+fn data_becomes_a_pointer_through_the_lfs_filter_alone() {
+    let f = Fixture::new();
+    let committed = f.git(&["cat-file", "-p", "HEAD:data/raw.txt"]);
     assert!(
         committed.starts_with("version https://git-lfs.github.com/spec/v1\n"),
-        "committed blob was not a pointer: {committed:?}"
+        "{committed}"
     );
-    assert!(committed.contains("size 200000"));
-
-    // The working tree still holds the real bytes.
-    assert_eq!(std::fs::read(f.root.join("data/big.bin")).unwrap(), data);
-    assert!(f.git(&["status", "--porcelain"]).trim().is_empty());
+    assert_eq!(f.read("data/raw.txt"), "alpha\nbeta\n");
 }
 
 #[test]
-fn status_reports_current_then_modified() {
+fn repro_runs_stages_in_dependency_order_and_writes_the_lock() {
     let f = Fixture::new();
-    f.write("data/a.bin", &payload(5000));
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data"]);
+    let out = f.ds_ok(&["repro"]);
 
-    assert!(f.ds_ok(&["status"]).contains("1 current"));
+    let prepare = out.find("==> prepare").expect("prepare should run");
+    let train = out.find("==> train").expect("train should run");
+    assert!(prepare < train, "producers run first:\n{out}");
 
-    f.write("data/a.bin", &payload(9000));
-    let out = f.ds_ok(&["status"]);
-    assert!(out.contains("1 modified"), "{out}");
-    assert!(out.contains("modified  data/a.bin"), "{out}");
-}
+    assert_eq!(f.metrics()["lines"], 6);
+    assert_eq!(f.metrics()["accuracy"], 12);
 
-/// A plain `git clone` leaves pointer text in the working tree. That is a
-/// "needs pull" state, not a user modification — reporting it as modified would
-/// invite the user to re-track a pointer and lose the reference to the data.
-#[test]
-fn a_fresh_clone_reports_not_local_rather_than_modified() {
-    let f = Fixture::new();
-    f.write("data/a.bin", &payload(5000));
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data"]);
-    f.git(&["commit", "-qm", "track"]);
-
-    // Own temp dir: a fixed name in the shared temp root collides with other
-    // tests running concurrently.
-    let clone_dir = tempfile::tempdir().unwrap();
-    let clone = clone_dir.path().join("cloned");
-    let out = Command::new("git")
-        .args(["clone", "-q"])
-        .arg(&f.root)
-        .arg(&clone)
-        .output()
-        .unwrap();
+    let lock = f.read("ds.lock");
     assert!(
-        out.status.success(),
-        "git clone failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        lock.contains("schema: '2.0'") || lock.contains("schema: \"2.0\""),
+        "{lock}"
     );
-
-    let out = Command::new(DS)
-        .current_dir(&clone)
-        .arg("status")
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("1 not-local"), "{text}");
-    assert!(!text.contains("1 modified"), "{text}");
+    assert!(lock.contains("prepare"), "{lock}");
+    assert!(lock.contains("git_sha"), "{lock}");
 }
 
-/// Re-tracking an unmaterialized file would hash the pointer text and produce a
-/// pointer to a pointer, permanently orphaning the real object.
+/// The lock's digest for an LFS path is the pointer's oid, which is what makes
+/// locking a large output cost nothing.
 #[test]
-fn tracking_pointer_text_is_refused() {
+fn the_lock_takes_its_digest_from_the_pointer() {
     let f = Fixture::new();
-    f.write("data/a.bin", &payload(5000));
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data"]);
-    f.git(&["commit", "-qm", "track"]);
+    f.ds_ok(&["repro"]);
 
-    // Simulate an unmaterialized checkout by restoring the pointer text.
-    let pointer = f.git(&["cat-file", "-p", "HEAD:data/a.bin"]);
-    f.write("data/a.bin", pointer.as_bytes());
+    let pointer = f.git(&["cat-file", "-p", ":data/prepared.txt"]);
+    let oid = pointer
+        .lines()
+        .find_map(|l| l.strip_prefix("oid sha256:"))
+        .expect("prepared.txt should be an LFS pointer")
+        .to_owned();
 
-    let out = f.ds(&["track", "data/a.bin"]);
+    let lock = f.read("ds.lock");
+    assert!(lock.contains(&oid), "lock should record {oid}:\n{lock}");
+}
+
+#[test]
+fn repro_is_a_noop_once_everything_is_current() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    let out = f.ds_ok(&["repro"]);
+    assert!(out.contains("up to date"), "{out}");
+    assert!(!out.contains("==> train"), "{out}");
+}
+
+#[test]
+fn status_explains_why_a_stage_is_stale() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    f.write_exec("scripts/train.sh", &format!("{TRAIN}# tweaked\n"));
+
+    let out = f.ds_ok(&["status"]);
+    assert!(out.contains("prepare"), "{out}");
+    assert!(out.contains("current"), "{out}");
+    assert!(
+        out.contains("scripts/train.sh changed"),
+        "the reason should name the dependency:\n{out}"
+    );
+}
+
+/// A parameter change is the case experiments turn on, so it must register even
+/// though no file a stage lists as a dependency moved.
+#[test]
+fn a_changed_parameter_makes_its_stage_stale() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  factor: 5\n",
+    );
+
+    let out = f.ds_ok(&["status"]);
+    assert!(out.contains("parameter train.factor changed"), "{out}");
+}
+
+#[test]
+fn rerunning_an_upstream_stage_reruns_what_depends_on_it() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 5\ntrain:\n  factor: 2\n",
+    );
+    let out = f.ds_ok(&["repro"]);
+
+    assert!(out.contains("==> prepare"), "{out}");
+    assert!(
+        out.contains("==> train"),
+        "train must follow prepare:\n{out}"
+    );
+    assert_eq!(f.metrics()["lines"], 10);
+}
+
+#[test]
+fn repro_can_be_limited_to_one_stage_and_its_ancestors() {
+    let f = Fixture::new();
+    let out = f.ds_ok(&["repro", "prepare"]);
+
+    assert!(out.contains("==> prepare"), "{out}");
+    assert!(!out.contains("==> train"), "train is downstream:\n{out}");
+    assert!(!f.root.join("models/model.txt").exists());
+}
+
+#[test]
+fn an_unknown_stage_is_refused() {
+    let f = Fixture::new();
+    let out = f.ds(&["repro", "nope"]);
     assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("pointer text"),
-        "{:?}",
+        String::from_utf8_lossy(&out.stderr).contains("nope"),
+        "{}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
 
-/// git-lfs emits no pointer for a zero-length file, so an empty file must stay
-/// an ordinary git blob.
 #[test]
-fn empty_files_are_staged_as_ordinary_blobs() {
+fn a_failing_stage_stops_the_run() {
     let f = Fixture::new();
-    f.write("data/empty.bin", b"");
-    f.ds_ok(&["init"]);
-    let out = f.ds_ok(&["track", "data"]);
-    assert!(out.contains("1 empty file(s) staged as-is"), "{out}");
+    f.write_exec("scripts/train.sh", "#!/bin/sh\nexit 3\n");
 
-    f.git(&["commit", "-qm", "track"]);
-    assert_eq!(f.git(&["cat-file", "-p", "HEAD:data/empty.bin"]), "");
-}
-
-#[test]
-fn executable_bit_survives_tracking() {
-    let f = Fixture::new();
-    let path = f.write("scripts/run.sh", &payload(2000));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "scripts"]);
-
+    let out = f.ds(&["repro"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("train"), "{stderr}");
     assert!(
-        f.git(&["ls-files", "--stage"]).starts_with("100755"),
-        "executable bit was lost"
+        stderr.contains('3'),
+        "the exit code should surface: {stderr}"
     );
 }
 
-/// The guard hook is the only thing standing between a stray `git add` and an
-/// unrecoverable multi-gigabyte blob in history.
 #[test]
-fn pre_commit_hook_refuses_a_large_non_pointer_blob() {
+fn metrics_are_listed_and_compared() {
     let f = Fixture::new();
-    f.ds_ok(&["init"]);
-    f.write("sneaky.bin", &payload(2_000_000));
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    let listed = f.ds_ok(&["metrics"]);
+    assert!(listed.contains("accuracy"), "{listed}");
+    assert!(listed.contains("12"), "{listed}");
+
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  factor: 3\n",
+    );
+    f.ds_ok(&["repro"]);
+
+    let compared = f.ds_ok(&["metrics", "--compare", "HEAD"]);
+    assert!(compared.contains("accuracy"), "{compared}");
+    assert!(compared.contains("+6"), "delta should show:\n{compared}");
+    assert!(
+        compared.contains("better"),
+        "more accuracy is better:\n{compared}"
+    );
+}
+
+#[test]
+fn an_experiment_is_recorded_as_a_ref_and_leaves_no_trace() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    let head_before = f.git(&["rev-parse", "HEAD"]);
+    let params_before = f.read("params.yaml");
+
+    let out = f.ds_ok(&["exp", "run", "--set", "train.factor=10"]);
+    assert!(out.contains("Recorded"), "{out}");
+
+    // The branch did not move and the tree is back as it was.
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head_before);
+    assert_eq!(f.read("params.yaml"), params_before);
+    assert_eq!(f.metrics()["accuracy"], 12, "workspace metrics restored");
+    assert!(f.git(&["status", "--porcelain"]).trim().is_empty());
+
+    // But the experiment is a real commit under its own ref.
+    let refs = f.git(&["for-each-ref", "--format=%(refname)", "refs/ds/exps"]);
+    assert_eq!(refs.lines().count(), 1, "{refs}");
+    assert!(!f.git(&["branch", "--list"]).contains("exp-"));
+}
+
+#[test]
+fn an_experiment_records_the_metrics_its_overrides_produced() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+    f.ds_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
+
+    let listed = f.ds_ok(&["exp", "list"]);
+    assert!(listed.contains("tenfold"), "{listed}");
+    assert!(
+        listed.contains("HEAD"),
+        "the baseline should be a row:\n{listed}"
+    );
+    assert!(listed.contains("60"), "6 lines x factor 10:\n{listed}");
+
+    let shown = f.ds_ok(&["exp", "show", "tenfold"]);
+    assert!(shown.contains("accuracy"), "{shown}");
+    assert!(shown.contains("better"), "{shown}");
+}
+
+#[test]
+fn applying_an_experiment_brings_its_parameters_into_the_tree() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+    f.ds_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
+
+    f.ds_ok(&["exp", "apply", "tenfold"]);
 
     assert!(
-        Command::new("git")
-            .current_dir(&f.root)
-            .args(["add", "-f", "sneaky.bin"])
-            .status()
-            .unwrap()
-            .success()
+        f.read("params.yaml").contains("factor: 10"),
+        "{}",
+        f.read("params.yaml")
     );
+    assert_eq!(f.metrics()["accuracy"], 60);
+}
+
+#[test]
+fn experiments_can_be_removed() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+    f.ds_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
+
+    f.ds_ok(&["exp", "remove", "tenfold"]);
+    assert!(f.ds_ok(&["exp", "list"]).contains("No experiments"));
+
+    let missing = f.ds(&["exp", "remove", "tenfold"]);
+    assert!(!missing.status.success());
+}
+
+/// An experiment must not fold the user's in-progress edits into its result,
+/// and must not discard them either.
+#[test]
+fn an_experiment_refuses_a_dirty_tree() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 9\ntrain:\n  factor: 2\n",
+    );
+
+    let out = f.ds(&["exp", "run", "--set", "train.factor=10"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("uncommitted"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        f.read("params.yaml").contains("repeat: 9"),
+        "the refused run must leave the edit alone"
+    );
+}
+
+/// The guard is the only thing left catching a large file no pattern covers.
+#[test]
+fn the_guard_hook_refuses_an_untracked_large_blob() {
+    let f = Fixture::new();
+    f.write("sneaky.bin", &"x".repeat(2_000_000));
+    f.git(&["add", "-f", "sneaky.bin"]);
 
     let out = Command::new("git")
         .current_dir(&f.root)
@@ -234,184 +480,25 @@ fn pre_commit_hook_refuses_a_large_non_pointer_blob() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "hook let a large raw blob through");
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("not an LFS pointer"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not an LFS pointer"), "{stderr}");
+    assert!(stderr.contains("git lfs track"), "{stderr}");
 }
 
 #[test]
-fn small_files_commit_normally_with_the_hook_installed() {
-    let f = Fixture::new();
-    f.ds_ok(&["init"]);
-    f.write("src/main.py", b"print('hi')\n");
-    f.git(&["add", "src/main.py"]);
-
-    let out = Command::new("git")
-        .current_dir(&f.root)
-        .args(["commit", "-m", "code"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "hook blocked an ordinary source file: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn tracking_outside_a_repository_fails_clearly() {
+fn commands_outside_a_repository_fail_clearly() {
     let dir = tempfile::tempdir().unwrap();
     let out = Command::new(DS)
         .current_dir(dir.path())
         .arg("status")
         .output()
         .unwrap();
+
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("git repository"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// The cache must hold the data while git's object store stays small — that is
-/// the whole point of the design.
-#[test]
-fn git_objects_stay_small_while_the_cache_holds_the_data() {
-    let f = Fixture::new();
-    f.write("data/big.bin", &payload(1_000_000));
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data"]);
-    f.git(&["commit", "-qm", "track"]);
-
-    assert!(dir_size(&f.root.join(".git/objects")) < 50_000);
-    assert!(dir_size(&f.root.join(".git/ds/cache")) >= 1_000_000);
-}
-
-/// Plain `git checkout` cannot switch away from a branch whose tracked data
-/// differs: skip-worktree tells git the file is absent, and finding it present
-/// makes the switch abort. `ds checkout` is the way through.
-#[test]
-fn checkout_switches_branches_when_tracked_data_differs() {
-    let f = Fixture::new();
-    let first = payload(300_000);
-    f.write("data/model.bin", &first);
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data/model.bin"]);
-    f.git(&["commit", "-qm", "first model"]);
-
-    f.git(&["checkout", "-q", "-b", "retrained"]);
-    let second = payload(450_000);
-    f.write("data/model.bin", &second);
-    f.ds_ok(&["track", "data/model.bin"]);
-    f.git(&["commit", "-qm", "second model"]);
-
-    // The failure this command exists to route around.
-    let blocked = Command::new("git")
-        .current_dir(&f.root)
-        .args(["checkout", "main"])
-        .output()
-        .unwrap();
-    assert!(
-        !blocked.status.success(),
-        "git checkout unexpectedly succeeded; ds checkout may no longer be needed"
-    );
-
-    f.ds_ok(&["checkout", "main"]);
-
-    assert_eq!(f.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
-    assert_eq!(
-        std::fs::read(f.root.join("data/model.bin")).unwrap(),
-        first,
-        "the branch's own data was not restored"
-    );
-    assert!(
-        f.ds_ok(&["status"]).contains("1 current"),
-        "restored data should not read as modified"
-    );
-
-    // And back again, to prove the return trip is not a one-way door.
-    f.ds_ok(&["checkout", "retrained"]);
-    assert_eq!(
-        std::fs::read(f.root.join("data/model.bin")).unwrap(),
-        second
-    );
-}
-
-/// Switching must never be the thing that loses data, so untracked edits stop
-/// it rather than being deleted along the way.
-#[test]
-fn checkout_refuses_to_discard_modified_data() {
-    let f = Fixture::new();
-    f.write("data/model.bin", &payload(300_000));
-    f.ds_ok(&["init"]);
-    f.ds_ok(&["track", "data/model.bin"]);
-    f.git(&["commit", "-qm", "model"]);
-    f.git(&["checkout", "-q", "-b", "other"]);
-
-    let edited = payload(310_000);
-    f.write("data/model.bin", &edited);
-
-    let out = f.ds(&["checkout", "main"]);
-    assert!(!out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("not tracked yet"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        std::fs::read(f.root.join("data/model.bin")).unwrap(),
-        edited,
-        "a refused checkout must leave the working tree alone"
-    );
-}
-
-/// `ds init` wires data uploads into `git push`, the way git-lfs does.
-#[test]
-fn init_installs_a_pre_push_hook() {
-    let f = Fixture::new();
-    f.ds_ok(&["init"]);
-
-    let hook = std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap();
-    assert!(hook.contains("ds-push"), "{hook}");
-    assert!(hook.contains("ds push"), "{hook}");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(f.root.join(".git/hooks/pre-push"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_ne!(mode & 0o111, 0, "the hook must be executable");
-    }
-}
-
-/// A hook the user wrote is theirs; `ds init` warns instead of overwriting it.
-#[test]
-fn init_leaves_a_foreign_pre_push_hook_alone() {
-    let f = Fixture::new();
-    std::fs::create_dir_all(f.root.join(".git/hooks")).unwrap();
-    f.write(".git/hooks/pre-push", b"#!/bin/sh\necho mine\n");
-
-    let out = f.ds(&["init"]);
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
-    assert_eq!(
-        std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap(),
-        "#!/bin/sh\necho mine\n"
-    );
-}
-
-fn dir_size(path: &Path) -> u64 {
-    walkdir::WalkDir::new(path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
 }

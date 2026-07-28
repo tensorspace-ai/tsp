@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ds-core", "crates/ds-lfs", "crates/ds-cli"]
+members = ["crates/ds-core", "crates/ds-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,10 +10,9 @@ repository = "https://github.com/jbenjoseph/ds"
 
 [workspace.dependencies]
 ds-core = { version = "0.1.0", path = "crates/ds-core" }
-ds-lfs = { version = "0.1.0", path = "crates/ds-lfs" }
 
-# Release profile tuned for a short-lived CLI that moves a lot of bytes: the
-# hot paths are sha256 hashing and copy loops, both of which benefit from LTO.
+# Release profile for a short-lived CLI that reads small YAML documents and
+# spawns git. Moving bytes is git-lfs's job, so startup dominates runtime.
 [profile.release]
 opt-level = 3
 lto = "fat"

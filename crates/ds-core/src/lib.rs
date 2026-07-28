@@ -1,17 +1,28 @@
-//! Core domain types for `ds`: object identity, the git-lfs pointer format,
-//! hashing, and the local content-addressed cache.
+//! Core domain types for `ds`: the pipeline and lock formats, parameters, the
+//! stage graph, and the git plumbing they are read through.
 //!
-//! `ds` deliberately does *not* install a `filter=lfs` gitattribute. It writes
-//! pointer blobs into git itself and owns transfer, so that a plain `git clone`
-//! yields pointers rather than triggering a smudge of every tracked byte.
+//! `ds` does not manage data. Datasets live in Git LFS, tracked by an ordinary
+//! `filter=lfs` gitattribute, so `git add`, `git push` and `git checkout` move
+//! bytes with no help from this tool. What is left — and what this crate is
+//! about — is the layer above: which stages produced which artifacts, whether
+//! that record still applies, and what an experiment changed.
+//!
+//! The `ds.yaml` and `ds.lock` formats are the contract with Gitea's Data tab,
+//! which parses both to render the DAG. They stay compatible with DVC's
+//! `dvc.yaml`/`dvc.lock` so existing repositories work unchanged.
 
-pub mod cache;
 pub mod git;
+pub mod graph;
 pub mod hash;
+pub mod lock;
+pub mod metrics;
 pub mod oid;
+pub mod params;
 pub mod paths;
+pub mod pipeline;
 pub mod pointer;
 
-pub use cache::Cache;
+pub use lock::{Lock, LockEntry, LockStage};
 pub use oid::Oid;
+pub use pipeline::{Pipeline, Stage};
 pub use pointer::Pointer;

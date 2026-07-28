@@ -5,14 +5,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# No async runtime and no HTTP client: transfers belong to git-lfs now, so the
+# CLI spawns git and reads YAML and nothing else.
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.4", features = ["derive"] }
 ds-core = { version = "0.1.0", path = "../ds-core" }
-ds-lfs = { version = "0.1.0", path = "../ds-lfs" }
-indicatif = "0.18.6"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
-walkdir = "2.5.0"
+serde_json = "1.0.151"
 
 [dev-dependencies]
+serde_json = "1.0.151"
 tempfile = "3.27.0"

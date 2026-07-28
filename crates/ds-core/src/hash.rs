@@ -39,6 +39,24 @@ pub fn hash_file(path: impl AsRef<Path>) -> io::Result<Pointer> {
     hash_reader(File::open(path)?)
 }
 
+/// Combines member digests into one identity for a directory.
+///
+/// Members must arrive sorted by path: the caller knows the ordering rule that
+/// applies (index order, here), and re-sorting inside would hide a caller that
+/// forgot. Path and digest are both folded in, so a rename with identical
+/// content still changes the result.
+pub fn digest_of_members(members: &[(String, String)]) -> String {
+    let mut hasher = Sha256::new();
+    for (path, digest) in members {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(digest.as_bytes());
+        hasher.update(b"\n");
+    }
+    let out: [u8; 32] = hasher.finalize().into();
+    hex::encode(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -226,18 +226,6 @@ impl Git {
         self.config(&format!("remote.{remote}.url"))
     }
 
-    /// Switches the working tree to `rev`.
-    ///
-    /// The only porcelain command in this module. Branch switching has no
-    /// plumbing equivalent short of reimplementing `unpack_trees`, and nothing
-    /// here parses the output — only the exit status is used, which is stable.
-    pub fn checkout(&self, rev: &str) -> Result<()> {
-        // The trailing `--` stops a ref that looks like a path from being read
-        // as one, which would silently restore files instead of switching.
-        self.run(["checkout", "--end-of-options", rev, "--"])
-            .map(|_| ())
-    }
-
     /// Resolves a revision to a full object id.
     pub fn rev_parse(&self, rev: &str) -> Result<String> {
         let out = self.run(["rev-parse", "--verify", "--end-of-options", rev])?;
@@ -269,6 +257,148 @@ impl Git {
             });
         }
         Ok(entries)
+    }
+
+    /// Paths whose working-tree content differs from the index.
+    ///
+    /// git has already done this comparison as part of its own bookkeeping, so
+    /// asking it costs a stat per path where hashing would cost a read. With an
+    /// LFS clean filter in play the answer covers data files too.
+    pub fn dirty_paths(&self) -> Result<std::collections::HashSet<String>> {
+        let out = self.run(["diff-files", "--name-only", "-z"])?;
+        Ok(split_nul(&out.stdout))
+    }
+
+    /// Paths staged for commit that differ from HEAD.
+    pub fn staged_paths(&self) -> Result<std::collections::HashSet<String>> {
+        // A repository with no commits has no HEAD to diff against; everything
+        // in the index is staged by definition.
+        if self.rev_parse("HEAD").is_err() {
+            return Ok(self.ls_files()?.into_iter().map(|e| e.path_str()).collect());
+        }
+        let out = self.run(["diff-index", "--cached", "--name-only", "-z", "HEAD"])?;
+        Ok(split_nul(&out.stdout))
+    }
+
+    /// Stages every change in the working tree, additions and deletions alike.
+    ///
+    /// This is where an LFS clean filter turns data into pointers, which is the
+    /// whole reason `ds` no longer writes pointer blobs itself.
+    pub fn stage_all(&self) -> Result<()> {
+        self.run(["add", "--all", "--"]).map(|_| ())
+    }
+
+    /// Installs git-lfs's filters and hooks into this repository.
+    ///
+    /// `--local` on purpose: configuring a user's global git is not this tool's
+    /// business, and a repository-scoped install is what makes a clone of it
+    /// behave the same for everyone.
+    pub fn lfs_install(&self) -> Result<()> {
+        self.run(["lfs", "install", "--local"]).map(|_| ())
+    }
+
+    /// Records `pattern` in `.gitattributes` as LFS-tracked.
+    pub fn lfs_track(&self, pattern: &str) -> Result<()> {
+        self.run(["lfs", "track", "--", pattern]).map(|_| ())
+    }
+
+    /// Stages the given paths, additions and deletions alike.
+    pub fn stage_paths(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec![
+            OsStr::new("add").to_owned(),
+            OsStr::new("--all").to_owned(),
+            OsStr::new("--").to_owned(),
+        ];
+        args.extend(paths.iter().map(|p| OsStr::new(p).to_owned()));
+        self.run(args).map(|_| ())
+    }
+
+    /// Records the index as a tree object.
+    pub fn write_tree(&self) -> Result<String> {
+        let out = self.run(["write-tree"])?;
+        Ok(trimmed(&out.stdout))
+    }
+
+    /// Creates a commit object without moving HEAD or any branch.
+    ///
+    /// This is how an experiment is recorded: the run becomes a real commit,
+    /// reachable only from its own ref, so nothing about the checked-out branch
+    /// changes and `git gc` still knows the objects are alive.
+    pub fn commit_tree(&self, tree: &str, parent: Option<&str>, message: &str) -> Result<String> {
+        let mut args = vec!["commit-tree".to_owned(), tree.to_owned()];
+        if let Some(parent) = parent {
+            args.push("-p".to_owned());
+            args.push(parent.to_owned());
+        }
+        args.push("-m".to_owned());
+        args.push(message.to_owned());
+
+        let out = self.run(args)?;
+        Ok(trimmed(&out.stdout))
+    }
+
+    pub fn update_ref(&self, name: &str, target: &str) -> Result<()> {
+        self.run(["update-ref", "--end-of-options", name, target])
+            .map(|_| ())
+    }
+
+    pub fn delete_ref(&self, name: &str) -> Result<()> {
+        self.run(["update-ref", "-d", "--end-of-options", name])
+            .map(|_| ())
+    }
+
+    /// Lists refs under `prefix` as (full name, object id).
+    pub fn refs_under(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let out = self.run([
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)",
+            "--sort=-committerdate",
+            prefix,
+        ])?;
+
+        let mut refs = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some((name, oid)) = line.split_once('\0') {
+                refs.push((name.to_owned(), oid.to_owned()));
+            }
+        }
+        Ok(refs)
+    }
+
+    /// Reads a blob at a revision, returning `None` when the path is absent.
+    ///
+    /// `--textconv` is deliberately not passed and no filter runs, so an
+    /// LFS-tracked path yields its pointer rather than the data it names.
+    pub fn read_blob_at(&self, rev: &str, path: &str) -> Result<Option<Vec<u8>>> {
+        match self.run(["cat-file", "blob", &format!("{rev}:{path}")]) {
+            Ok(out) => Ok(Some(out.stdout)),
+            Err(GitError::Failed { .. }) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Restores paths from a revision into the index and working tree.
+    pub fn restore_from(&self, rev: &str, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec![
+            OsStr::new("checkout").to_owned(),
+            OsStr::new("--end-of-options").to_owned(),
+            OsStr::new(rev).to_owned(),
+            OsStr::new("--").to_owned(),
+        ];
+        args.extend(paths.iter().map(|p| OsStr::new(p).to_owned()));
+        self.run(args).map(|_| ())
+    }
+
+    /// Resets the index and working tree to `rev`, discarding everything else.
+    pub fn reset_hard(&self, rev: &str) -> Result<()> {
+        self.run(["reset", "--hard", "--quiet", "--end-of-options", rev])
+            .map(|_| ())
     }
 
     /// Reads many blobs through a single `cat-file --batch` process.
@@ -332,6 +462,21 @@ pub struct IndexEntry {
     pub mode: String,
     pub sha: String,
     pub path: PathBuf,
+}
+
+impl IndexEntry {
+    /// The path as git spells it: forward slashes on every platform.
+    pub fn path_str(&self) -> String {
+        self.path.to_string_lossy().replace('\\', "/")
+    }
+}
+
+fn split_nul(bytes: &[u8]) -> std::collections::HashSet<String> {
+    bytes
+        .split(|b| *b == 0)
+        .filter(|r| !r.is_empty())
+        .map(|r| String::from_utf8_lossy(r).into_owned())
+        .collect()
 }
 
 /// Splits `<sha> <type> <size>\n<content>\n` records.

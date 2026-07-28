@@ -2,11 +2,10 @@
 //!
 //! spec: <https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md#the-pointer>
 //!
-//! `ds` writes these blobs into git itself rather than delegating to a
-//! `filter=lfs` clean filter, so the bytes produced here must match what
-//! git-lfs and Gitea would produce exactly: Gitea's LFS garbage collector
-//! decides an object is reachable by hashing this canonical text and looking
-//! for a git blob with that hash. A single byte of drift orphans the object.
+//! `ds` reads these; git-lfs's clean filter writes them. Reading is what makes
+//! locking cheap: a pointer already states the sha256 of the content it stands
+//! for, so recording the identity of a multi-gigabyte output costs a blob read
+//! rather than a pass over the data.
 
 use std::fmt;
 use std::str::FromStr;

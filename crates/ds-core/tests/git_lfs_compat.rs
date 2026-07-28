@@ -1,9 +1,8 @@
-//! Cross-checks our pointer bytes against the real `git-lfs` binary.
+//! Cross-checks our pointer parsing against the real `git-lfs` binary.
 //!
-//! This is the test that backs the central design claim: `ds` invents no
-//! pointer format. Gitea's LFS garbage collector treats an object as reachable
-//! only if a git blob exists whose content hashes to the canonical pointer
-//! text, so drift here silently orphans tracked data.
+//! git-lfs writes the pointers now, and `ds` reads them to learn what a stage
+//! produced. Agreement on the format is therefore a precondition for the lock
+//! recording the right digest — and for reading it back at all.
 //!
 //! Skipped when `git-lfs` is not installed.
 

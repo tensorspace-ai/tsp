@@ -1,19 +1,30 @@
-//! `ds` — data version control backed by Git LFS.
+//! `ds` — reproducible pipelines and experiments on top of git.
+//!
+//! Data management is not here. Datasets belong in Git LFS through an ordinary
+//! `filter=lfs` gitattribute, which means `git add`, `git push`, `git checkout`
+//! and `git clone` move bytes with no help from this tool, and `git lfs prune`
+//! and `git lfs fsck` maintain them. What `ds` adds is the layer git has no
+//! opinion about: which stages produced which artifacts, whether that record
+//! still holds, and what a given experiment changed.
+
+mod exp;
 
 mod repo;
-
-use std::path::PathBuf;
+mod run;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+use ds_core::git::Git;
+use ds_core::metrics;
+use ds_core::params::Override;
 
-use repo::{Repo, State, pointers_of, short};
+use repo::Repo;
 
 #[derive(Parser)]
 #[command(
     name = "ds",
     version,
-    about = "Version datasets in git, with Git LFS as the object store"
+    about = "Reproducible pipelines and experiments, versioned in git"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -22,30 +33,59 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Prepare the repository for `ds`
-    Init,
-    /// Start tracking files or directories as data
-    Track {
-        /// Files or directories to track
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
+    /// Set the repository up for `ds` and Git LFS
+    Init {
+        /// Path patterns to send to Git LFS, e.g. "data/**" "models/**"
+        #[arg(long = "lfs", value_name = "PATTERN")]
+        lfs: Vec<String>,
     },
-    /// Show what is tracked and whether it is present
+    /// Run the stages that are out of date and update the lock file
+    Repro {
+        /// Only this stage and the stages it depends on
+        stage: Option<String>,
+        /// Run every stage in the plan, current or not
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show which stages are current, stale or new
     Status,
-    /// Switch branches, moving tracked data out of git's way
-    Checkout {
-        /// Branch, tag or commit to switch to
-        rev: String,
+    /// Show metric values, optionally against another revision
+    Metrics {
+        /// Revision to compare against, e.g. a branch, tag or experiment
+        #[arg(long)]
+        compare: Option<String>,
     },
-    /// Upload tracked objects to the remote's LFS store
-    Push {
-        #[arg(long, default_value = "origin")]
-        remote: String,
+    /// Run and compare parameter experiments
+    Exp(ExpArgs),
+}
+
+#[derive(Args)]
+struct ExpArgs {
+    #[command(subcommand)]
+    command: ExpCommand,
+}
+
+#[derive(Subcommand)]
+enum ExpCommand {
+    /// Run the pipeline with parameter overrides and record the result
+    Run {
+        /// Override a parameter, e.g. --set train.max_depth=8
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set: Vec<String>,
+        /// Name for the experiment; one is derived from the commit otherwise
+        #[arg(long)]
+        name: Option<String>,
     },
-    /// Download tracked objects and restore them into the working tree
-    Pull {
-        #[arg(long, default_value = "origin")]
-        remote: String,
+    /// List recorded experiments and their metrics
+    List,
+    /// Show one experiment in detail
+    Show { name: String },
+    /// Bring an experiment's parameters and outputs into the working tree
+    Apply { name: String },
+    /// Delete experiments
+    Remove {
+        #[arg(required = true)]
+        names: Vec<String>,
     },
 }
 
@@ -54,57 +94,72 @@ fn main() -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     match cli.command {
-        Command::Init => init(&cwd),
-        Command::Track { paths } => track(&cwd, &paths),
+        Command::Init { lfs } => init(&cwd, &lfs),
+        Command::Repro { stage, force } => repro(&cwd, stage.as_deref(), force),
         Command::Status => status(&cwd),
-        Command::Checkout { rev } => checkout(&cwd, &rev),
-        Command::Push { remote } => block_on(push(cwd, remote)),
-        Command::Pull { remote } => block_on(pull(cwd, remote)),
+        Command::Metrics { compare } => show_metrics(&cwd, compare.as_deref()),
+        Command::Exp(args) => match args.command {
+            ExpCommand::Run { set, name } => exp_run(&cwd, &set, name.as_deref()),
+            ExpCommand::List => exp_list(&cwd),
+            ExpCommand::Show { name } => exp_show(&cwd, &name),
+            ExpCommand::Apply { name } => exp_apply(&cwd, &name),
+            ExpCommand::Remove { names } => exp_remove(&cwd, &names),
+        },
     }
 }
 
-/// Transfers are the only async work, so the runtime is built on demand.
-fn block_on<F: std::future::Future<Output = Result<()>>>(fut: F) -> Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(fut)
-}
+/// Configures Git LFS and installs the guard hook.
+///
+/// `ds` does not move data, so this is mostly a matter of handing the job to
+/// git-lfs properly: install its filters, then record the patterns that decide
+/// what counts as data.
+fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
+    let git = Git::discover(cwd).context("not inside a git repository")?;
 
-fn init(cwd: &std::path::Path) -> Result<()> {
-    let repo = Repo::open(cwd)?;
-    std::fs::create_dir_all(repo.cache().root())?;
-    install_hook(&repo, "pre-commit", "ds-guard", GUARD_HOOK)?;
-    install_hook(&repo, "pre-push", "ds-push", PUSH_HOOK)?;
+    git.lfs_install()
+        .context("running `git lfs install` — is git-lfs installed?")?;
+    println!("Configured Git LFS in {}", git.work_tree().display());
 
-    println!("Initialized ds in {}", repo.git().work_tree().display());
-    println!("  cache: {}", repo.cache().root().display());
-    println!("\nTrack data with `ds track <path>`, then `git commit` and `git push`.");
+    for pattern in patterns {
+        git.lfs_track(pattern)
+            .with_context(|| format!("tracking {pattern:?} with Git LFS"))?;
+        println!("  data: {pattern}");
+    }
+
+    install_guard_hook(&git)?;
+
+    if patterns.is_empty() {
+        println!("\nTell Git LFS what counts as data, e.g.:");
+        println!("  git lfs track \"data/**\" \"models/**\"");
+    }
+    println!("\nDescribe your stages in ds.yaml, then run `ds repro`.");
     Ok(())
 }
 
-/// Installs one of our hooks, refusing to clobber a hook someone else owns.
+/// Refuses to commit a large blob that no LFS filter claimed.
 ///
-/// `marker` is the string our own script carries, so re-running `ds init` over
-/// a hook we wrote is silent while a hook the user wrote is left alone.
-fn install_hook(repo: &Repo, name: &str, marker: &str, body: &str) -> Result<()> {
-    let hooks = repo.git().git_dir().join("hooks");
+/// git-lfs converts anything matching `.gitattributes`, so what is left to
+/// catch is the file nobody remembered to add a pattern for. That mistake is
+/// only visible once it is in history, where it cannot be removed without a
+/// rewrite.
+fn install_guard_hook(git: &Git) -> Result<()> {
+    let hooks = git.git_dir().join("hooks");
     std::fs::create_dir_all(&hooks)?;
-    let path = hooks.join(name);
+    let path = hooks.join("pre-commit");
 
     if path.exists() {
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if !existing.contains(marker) {
+        if !existing.contains("ds-guard") {
             eprintln!(
                 "warning: {} already exists and was left alone; \
-                 add `{marker}` to it by hand to keep ds working",
+                 large-file protection is not installed",
                 path.display()
             );
         }
         return Ok(());
     }
 
-    std::fs::write(&path, body)?;
+    std::fs::write(&path, GUARD_HOOK)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -115,8 +170,8 @@ fn install_hook(repo: &Repo, name: &str, marker: &str, body: &str) -> Result<()>
 
 const GUARD_HOOK: &str = r#"#!/bin/sh
 # ds-guard: refuse to commit a large blob that is not an LFS pointer.
-# ds tracks data by writing pointer blobs directly, with no clean filter, so
-# nothing else would stop an accidental `git add` of a multi-gigabyte file.
+# git-lfs converts whatever .gitattributes matches; this catches the file that
+# no pattern covers, which is the one that ends up stuck in history.
 limit=1048576
 fail=0
 git diff --cached --name-only --diff-filter=ACM | while IFS= read -r path; do
@@ -127,267 +182,269 @@ git diff --cached --name-only --diff-filter=ACM | while IFS= read -r path; do
     if ! git cat-file -p "$sha" 2>/dev/null | head -n 1 |
         grep -q '^version https://git-lfs.github.com/spec/v1$'; then
         echo "ds: refusing to commit $path ($size bytes, not an LFS pointer)" >&2
-        echo "ds: track it with 'ds track $path', or bypass with --no-verify" >&2
+        echo "ds: track it with 'git lfs track \"$path\"', or bypass with --no-verify" >&2
         exit 1
     fi
 done || fail=1
 exit $fail
 "#;
 
-/// Uploads objects as part of `git push`, which is how git-lfs behaves.
-///
-/// git-lfs is transparent through two independent mechanisms: clean/smudge
-/// filters, which `ds` deliberately does without, and this hook, which it has
-/// no reason to. Pushing the pointers without the bytes they name is what
-/// leaves a remote holding references to data nobody can fetch.
-///
-/// git passes the remote name as $1, and `ds push` reports its own errors, so a
-/// failure here fails the push — the same contract git-lfs's hook has.
-const PUSH_HOOK: &str = r#"#!/bin/sh
-# ds-push: upload tracked data before the pointers referring to it are pushed.
-# Bypass with `git push --no-verify` if you mean to push pointers alone.
-command -v ds >/dev/null 2>&1 || {
-    echo "ds: not on PATH; skipping data upload" >&2
-    exit 0
-}
-exec ds push --remote "${1:-origin}"
-"#;
+fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> {
+    let mut repo = Repo::open(cwd)?;
+    let ran = run::repro(&mut repo, stage, force)?;
 
-fn track(cwd: &std::path::Path, paths: &[PathBuf]) -> Result<()> {
-    let repo = Repo::open(cwd)?;
-    let files = repo.expand(paths)?;
-
-    let mut tracked = 0usize;
-    let mut bytes = 0u64;
-    let mut skipped = 0usize;
-
-    for file in &files {
-        match repo.track_file(file)? {
-            Some(p) => {
-                tracked += 1;
-                bytes += p.size;
-                println!("  {} {}", short(&p.oid), file.display());
-            }
-            None => skipped += 1,
-        }
+    if ran.is_empty() {
+        println!("Everything is up to date.");
+        return Ok(());
     }
-
-    println!("Tracked {tracked} file(s), {}", human_bytes(bytes));
-    if skipped > 0 {
-        println!("{skipped} empty file(s) staged as-is (git-lfs does not point at empty files)");
-    }
-    println!("Next: `git commit` to record the pointers; `git push` uploads the data.");
+    println!(
+        "\nRan {} stage(s); {} updated and staged.",
+        ran.len(),
+        ds_core::lock::Lock::name_for(&repo.pipeline_file)
+    );
+    println!("Commit the result with `git commit`; `git push` uploads the data.");
     Ok(())
 }
 
 fn status(cwd: &std::path::Path) -> Result<()> {
     let repo = Repo::open(cwd)?;
-    let tracked = repo.tracked()?;
+    let statuses = repo.statuses()?;
 
-    if tracked.is_empty() {
-        println!("No tracked data. Use `ds track <path>` to start.");
+    if statuses.is_empty() {
+        println!("No stages defined in {}.", repo.pipeline_file);
         return Ok(());
     }
 
-    let (mut current, mut modified, mut cached, mut missing, mut not_local) = (0, 0, 0, 0, 0);
-    for t in &tracked {
-        let state = repo.state_of(t);
-        match state {
-            State::Current => current += 1,
-            State::NotMaterialized => not_local += 1,
-            State::Modified => modified += 1,
-            State::Cached => cached += 1,
-            State::Missing => missing += 1,
+    let width = statuses.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let mut stale = 0;
+    for (name, status) in &statuses {
+        if status.needs_run() {
+            stale += 1;
         }
-        if state != State::Current {
-            println!("  {:<9} {}", label(state), t.path.display());
+        match status.reason() {
+            Some(reason) => println!("  {name:<width$}  {:<8}  {reason}", status.label()),
+            None => println!("  {name:<width$}  {}", status.label()),
         }
     }
 
-    let total: u64 = tracked.iter().map(|t| t.pointer.size).sum();
-    println!(
-        "{} tracked file(s), {} — {current} current, {not_local} not-local, \
-         {modified} modified, {cached} cached, {missing} missing",
-        tracked.len(),
-        human_bytes(total)
-    );
-    if modified > 0 {
-        println!("Re-track modified files with `ds track <path>`.");
-    }
-    if not_local + cached + missing > 0 {
-        println!("Restore absent files with `ds pull`.");
+    println!("\n{} stage(s); {stale} need running.", statuses.len());
+    if stale > 0 {
+        println!("Bring them up to date with `ds repro`.");
     }
     Ok(())
 }
 
-/// Switches branches, which plain `git checkout` cannot do here.
-///
-/// A tracked path is `skip-worktree`, which git reads as "this file is not in
-/// the working tree" — the sparse-checkout contract. `ds` breaks that half of
-/// the deal on purpose: the file *is* there, holding the data rather than the
-/// pointer. So the moment a tracked file differs between two commits, git
-/// refuses to switch and `-f` does not help either:
-///
-/// ```text
-/// error: Entry 'models/model.joblib' not uptodate. Cannot merge.
-/// ```
-///
-/// The way out is to take the data out of git's way, let git do the switch
-/// against what it thinks is an empty slot, and put the data back afterwards.
-/// Nothing is downloaded: the objects are content-addressed in the cache.
-fn checkout(cwd: &std::path::Path, rev: &str) -> Result<()> {
+fn show_metrics(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
     let repo = Repo::open(cwd)?;
-    let before = repo.tracked()?;
+    let current = metrics::read(repo.git(), repo.root(), &repo.pipeline, None)?;
 
-    let mut moved_aside = Vec::new();
-    for t in &before {
-        match repo.state_of(t) {
-            // Removing this would destroy the only copy of the data.
-            State::Modified => anyhow::bail!(
-                "{} has changes that are not tracked yet; \
-                 run `ds track {}` or restore it before switching",
-                t.path.display(),
-                t.path.display()
-            ),
-            State::Current => {
-                // Current means the bytes hash to the pointer, so caching them
-                // is a verified no-op when the object is already there — and
-                // the difference between safe and lossy when it is not.
-                if !repo.cache().contains(&t.pointer.oid) {
-                    repo.cache()
-                        .insert_file(repo.git().work_tree().join(&t.path))
-                        .with_context(|| format!("caching {}", t.path.display()))?;
-                }
-                moved_aside.push(t.clone());
+    let Some(rev) = compare else {
+        if current.is_empty() {
+            println!("No metrics files found. Declare them under a stage's `metrics:`.");
+            return Ok(());
+        }
+        let width = current.iter().map(|m| m.key.len()).max().unwrap_or(0);
+        for metric in &current {
+            println!("  {:<width$}  {}", metric.key, metric.display());
+        }
+        return Ok(());
+    };
+
+    let other = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some(rev))?;
+    print_comparison(&metrics::compare(&current, &other), "workspace", rev);
+    Ok(())
+}
+
+fn print_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &str) {
+    let key_width = rows
+        .iter()
+        .map(|r| r.key.len())
+        .chain([6])
+        .max()
+        .unwrap_or(6);
+    println!(
+        "  {:<key_width$}  {:>12}  {:>12}  DELTA",
+        "METRIC", current_label, compare_label
+    );
+
+    for row in rows {
+        let delta = match (row.delta, row.improved) {
+            (Some(d), Some(true)) => format!("{} better", metrics::format_delta(d)),
+            (Some(d), Some(false)) => format!("{} worse", metrics::format_delta(d)),
+            (Some(d), None) => metrics::format_delta(d),
+            (None, _) => String::new(),
+        };
+        println!(
+            "  {:<key_width$}  {:>12}  {:>12}  {delta}",
+            row.key,
+            row.current.as_deref().unwrap_or("-"),
+            row.compare.as_deref().unwrap_or("-"),
+        );
+    }
+}
+
+fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>) -> Result<()> {
+    let overrides: Vec<Override> = set
+        .iter()
+        .map(|s| s.parse())
+        .collect::<std::result::Result<_, _>>()?;
+
+    let mut repo = Repo::open(cwd)?;
+    let experiment = exp::run(&mut repo, &overrides, name)?;
+
+    println!(
+        "\nRecorded {} ({})",
+        experiment.name,
+        &experiment.commit[..7]
+    );
+    let produced = exp::metrics_of(&repo, &experiment)?;
+    let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
+    if !produced.is_empty() {
+        println!();
+        print_comparison(
+            &metrics::compare(&produced, &baseline),
+            &experiment.name,
+            "HEAD",
+        );
+    }
+    println!("\nApply it with `ds exp apply {}`.", experiment.name);
+    Ok(())
+}
+
+fn exp_list(cwd: &std::path::Path) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let experiments = exp::list(&repo)?;
+
+    if experiments.is_empty() {
+        println!("No experiments yet. Run one with `ds exp run --set key=value`.");
+        return Ok(());
+    }
+
+    // One column per metric key, so runs line up under the same headings.
+    let mut keys: Vec<String> = Vec::new();
+    let mut rows: Vec<(String, Vec<Metricish>)> = Vec::new();
+
+    let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
+    for metric in &baseline {
+        if !keys.contains(&metric.key) {
+            keys.push(metric.key.clone());
+        }
+    }
+    rows.push(("HEAD".to_owned(), values_for(&keys, &baseline)));
+
+    for experiment in &experiments {
+        let produced = exp::metrics_of(&repo, experiment)?;
+        for metric in &produced {
+            if !keys.contains(&metric.key) {
+                keys.push(metric.key.clone());
             }
-            // Pointer text, which git can write again from the index.
-            State::NotMaterialized => moved_aside.push(t.clone()),
-            // Already absent from the working tree; nothing is in git's way.
-            State::Cached | State::Missing => {}
         }
+        rows.push((experiment.name.clone(), values_for(&keys, &produced)));
     }
 
-    for t in &moved_aside {
-        let abs = repo.git().work_tree().join(&t.path);
-        std::fs::remove_file(&abs)
-            .with_context(|| format!("clearing {} before checkout", t.path.display()))?;
+    // Re-resolve now that every key is known, so late columns are not blank.
+    let mut resolved: Vec<(String, Vec<Metricish>)> = Vec::with_capacity(rows.len());
+    resolved.push(("HEAD".to_owned(), values_for(&keys, &baseline)));
+    for experiment in &experiments {
+        let produced = exp::metrics_of(&repo, experiment)?;
+        resolved.push((experiment.name.clone(), values_for(&keys, &produced)));
     }
 
-    if let Err(err) = repo.git().checkout(rev) {
-        // Leave the working tree as it was found rather than stripped of data.
-        for t in &moved_aside {
-            let _ = repo.materialize(t);
-        }
-        return Err(err).with_context(|| format!("switching to {rev}"));
-    }
+    let name_width = resolved
+        .iter()
+        .map(|(n, _)| n.len())
+        .chain([4])
+        .max()
+        .unwrap();
+    let widths: Vec<usize> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            resolved
+                .iter()
+                .map(|(_, vals)| vals[i].0.len())
+                .chain([key.len()])
+                .max()
+                .unwrap()
+        })
+        .collect();
 
-    let (mut restored, mut absent) = (0usize, 0usize);
-    for t in &repo.tracked()? {
-        if !repo.cache().contains(&t.pointer.oid) {
-            absent += 1;
-            continue;
-        }
-        if repo.state_of(t) != State::Current {
-            repo.materialize(t)?;
-            restored += 1;
-        }
+    print!("  {:<name_width$}", "NAME");
+    for (key, width) in keys.iter().zip(&widths) {
+        print!("  {key:>width$}");
     }
+    println!();
 
-    println!("Switched to {rev}; restored {restored} file(s) from the cache.");
-    if absent > 0 {
-        println!("{absent} file(s) are not cached locally — run `ds pull` to fetch them.");
+    for (name, values) in &resolved {
+        print!("  {name:<name_width$}");
+        for (value, width) in values.iter().zip(&widths) {
+            print!("  {:>width$}", value.0);
+        }
+        println!();
     }
     Ok(())
 }
 
-fn label(state: State) -> &'static str {
-    match state {
-        State::Current => "current",
-        State::NotMaterialized => "not-local",
-        State::Modified => "modified",
-        State::Cached => "cached",
-        State::Missing => "missing",
-    }
+/// A metric value already rendered for the table, or "-" when absent.
+struct Metricish(String);
+
+fn values_for(keys: &[String], metrics: &[metrics::Metric]) -> Vec<Metricish> {
+    keys.iter()
+        .map(|key| {
+            Metricish(
+                metrics
+                    .iter()
+                    .find(|m| &m.key == key)
+                    .map_or_else(|| "-".to_owned(), |m| m.display()),
+            )
+        })
+        .collect()
 }
 
-async fn push(cwd: PathBuf, remote: String) -> Result<()> {
-    let repo = Repo::open(&cwd)?;
-    let tracked = repo.tracked()?;
-    if tracked.is_empty() {
-        println!("Nothing to push.");
-        return Ok(());
-    }
+fn exp_show(cwd: &std::path::Path, name: &str) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let experiment = exp::find(&repo, name)?;
 
-    // Which objects need bytes is the server's answer, not ours: it is asked in
-    // the batch request, and everything it already holds needs nothing local.
-    let client = repo.client(&remote)?;
-    let summary = client
-        .upload(repo.cache(), &pointers_of(&tracked))
-        .await
-        .context("uploading objects")?;
-
-    println!(
-        "Pushed {} object(s); {} already on the server.",
-        summary.transferred, summary.already_present
-    );
-    Ok(())
-}
-
-async fn pull(cwd: PathBuf, remote: String) -> Result<()> {
-    let repo = Repo::open(&cwd)?;
-    let tracked = repo.tracked()?;
-    if tracked.is_empty() {
-        println!("Nothing to pull.");
-        return Ok(());
-    }
-
-    let client = repo.client(&remote)?;
-    let summary = client
-        .download(repo.cache(), &pointers_of(&tracked))
-        .await
-        .context("downloading objects")?;
-
-    let mut restored = 0usize;
-    for t in &tracked {
-        if repo.state_of(t) != State::Current {
-            repo.materialize(t)?;
-            restored += 1;
-        }
-    }
-
-    println!(
-        "Fetched {} object(s); {} already cached. Restored {restored} file(s).",
-        summary.transferred, summary.already_present
-    );
-    Ok(())
-}
-
-fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = n as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{n} B")
+    println!("{}  {}", experiment.name, experiment.commit);
+    let produced = exp::metrics_of(&repo, &experiment)?;
+    let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
+    if produced.is_empty() {
+        println!("  (no metrics recorded)");
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        println!();
+        print_comparison(
+            &metrics::compare(&produced, &baseline),
+            &experiment.name,
+            "HEAD",
+        );
     }
+    Ok(())
+}
+
+fn exp_apply(cwd: &std::path::Path, name: &str) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let experiment = exp::find(&repo, name)?;
+    let restored = exp::apply(&repo, &experiment)?;
+
+    println!(
+        "Applied {} to the working tree ({} path(s)).",
+        experiment.name,
+        restored.len()
+    );
+    println!("Review with `git diff --cached`, then commit or `git reset --hard` to discard.");
+    Ok(())
+}
+
+fn exp_remove(cwd: &std::path::Path, names: &[String]) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let removed = exp::remove(&repo, names)?;
+    println!("Removed {removed} experiment(s).");
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn human_bytes_scales() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(2048), "2.0 KiB");
-        assert_eq!(human_bytes(7_600_000_000), "7.1 GiB");
-    }
 
     #[test]
     fn cli_definition_is_valid() {

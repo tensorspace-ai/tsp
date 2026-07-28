@@ -1,261 +1,300 @@
-//! Repository operations: the layer that ties git, the cache and LFS together.
+//! The repository as `ds` sees it: a pipeline, a lock, and the git plumbing
+//! needed to answer questions about them.
+//!
+//! There is no data layer here. A dataset is whatever `.gitattributes` sends
+//! through the LFS filter; `ds` reads the pointer git already holds and never
+//! touches the bytes.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use ds_core::cache::{Cache, Materialize};
-use ds_core::git::{FileMode, Git, credential_fill};
-use ds_core::{Oid, Pointer, hash, paths, pointer};
-use ds_lfs::Client;
-use ds_lfs::endpoint;
-
-/// A dataset file: where it lives, what it points at, and the mode git holds
-/// for it — without which `ds pull` cannot restore an executable as executable.
-#[derive(Clone, Debug)]
-pub struct Tracked {
-    pub path: PathBuf,
-    pub pointer: Pointer,
-    pub mode: FileMode,
-}
-
-/// What `ds status` reports for one tracked file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
-    /// Working-tree content matches the pointer.
-    Current,
-    /// The working tree still holds the pointer text itself, which is what a
-    /// plain `git clone` produces. Needs `ds pull`, not re-tracking.
-    NotMaterialized,
-    /// Present locally but the content no longer matches; needs re-tracking.
-    Modified,
-    /// Not in the working tree, but the object is cached, so `ds pull` is local.
-    Cached,
-    /// Neither in the working tree nor cached; `ds pull` must hit the network.
-    Missing,
-}
+use ds_core::git::Git;
+use ds_core::graph::{self, Resolver, Status};
+use ds_core::lock::{Lock, LockEntry, LockStage};
+use ds_core::params::Params;
+use ds_core::pipeline::Pipeline;
+use ds_core::{Pointer, hash};
 
 pub struct Repo {
     git: Git,
-    cache: Cache,
+    root: PathBuf,
+    /// The pipeline file that was found, e.g. `ds.yaml`.
+    pub pipeline_file: String,
+    pub pipeline: Pipeline,
+    pub lock: Lock,
 }
 
 impl Repo {
-    pub fn open(start: impl AsRef<Path>) -> Result<Self> {
+    /// Opens the repository containing `start`, requiring a pipeline.
+    pub fn open(start: &Path) -> Result<Self> {
         let git = Git::discover(start).context("not inside a git repository")?;
-        let cache = Cache::in_git_dir(git.git_dir());
-        Ok(Self { git, cache })
+        let root = git.work_tree().to_path_buf();
+
+        let Some((pipeline_file, pipeline)) = Pipeline::find(&root)? else {
+            bail!(
+                "no pipeline file in {}; create a ds.yaml describing your stages",
+                root.display()
+            );
+        };
+        let lock = Lock::read_or_default(&root, &pipeline_file)?;
+
+        Ok(Self {
+            git,
+            root,
+            pipeline_file,
+            pipeline,
+            lock,
+        })
     }
 
     pub fn git(&self) -> &Git {
         &self.git
     }
 
-    pub fn cache(&self) -> &Cache {
-        &self.cache
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
-    /// Every path in the index whose blob is an LFS pointer.
-    ///
-    /// Detection is by content, exactly as Gitea does it, so there is no
-    /// separate registry of tracked files to drift out of sync with git.
-    pub fn tracked(&self) -> Result<Vec<Tracked>> {
-        let entries = self.git.ls_files()?;
-        let candidates: Vec<_> = entries
-            .iter()
-            .filter(|e| e.mode.starts_with("100"))
-            .collect();
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let shas: Vec<String> = candidates.iter().map(|e| e.sha.clone()).collect();
-        let blobs = self.git.read_blobs(&shas)?;
-
-        let mut tracked = Vec::new();
-        for (entry, (_, content)) in candidates.iter().zip(blobs.iter()) {
-            if !Pointer::could_be_pointer(content.len() as u64) {
-                continue;
-            }
-            let Some(mode) = FileMode::from_octal(&entry.mode) else {
-                continue;
-            };
-            if let Ok(p) = Pointer::try_from(content.as_slice()) {
-                tracked.push(Tracked {
-                    path: entry.path.clone(),
-                    pointer: p,
-                    mode,
-                });
-            }
-        }
-        Ok(tracked)
+    pub fn lock_path(&self) -> PathBuf {
+        self.root.join(Lock::name_for(&self.pipeline_file))
     }
 
-    /// Classifies a tracked file without hashing unless it has to.
-    pub fn state_of(&self, t: &Tracked) -> State {
-        let abs = self.git.work_tree().join(&t.path);
-        let Ok(meta) = std::fs::metadata(&abs) else {
-            return if self.cache.contains(&t.pointer.oid) {
-                State::Cached
-            } else {
-                State::Missing
-            };
+    /// Stages in dependency order, restricted to `target` and its ancestors
+    /// when one is named.
+    pub fn plan(&self, target: Option<&str>) -> Result<Vec<String>> {
+        let order = graph::topological_order(&self.pipeline)?;
+        Ok(match target {
+            Some(name) => {
+                self.pipeline.stage(name)?; // reject an unknown name up front
+                graph::ancestors(&self.pipeline, &order, name)
+            }
+            None => order,
+        })
+    }
+
+    /// The status of every stage, in dependency order.
+    pub fn statuses(&self) -> Result<Vec<(String, Status)>> {
+        let index = self.index_shas()?;
+        let dirty = self.git.dirty_paths()?;
+        let params = self.param_cache()?;
+
+        let git_sha_of = |path: &str| index.get(path).cloned();
+        let param_of = |file: &str, key: &str| params.get(file).and_then(|p| p.get(key)).cloned();
+        let now = Resolver {
+            git_sha_of: &git_sha_of,
+            param_of: &param_of,
+            dirty: &dirty,
         };
 
-        // Must precede the size check: after a plain `git clone` the working
-        // tree holds the pointer text, which would otherwise look like the
-        // user replaced the data with a 130-byte file.
-        if is_pointer_for(&abs, &t.pointer) {
-            return State::NotMaterialized;
-        }
-
-        // Size is a free first check; only hash when it could match.
-        if meta.len() != t.pointer.size {
-            return State::Modified;
-        }
-        match hash::hash_file(&abs) {
-            Ok(p) if p.oid == t.pointer.oid => State::Current,
-            _ => State::Modified,
-        }
+        Ok(self
+            .plan(None)?
+            .into_iter()
+            .map(|name| {
+                let status = graph::status_of(&self.pipeline, &self.lock, &name, &now);
+                (name, status)
+            })
+            .collect())
     }
 
-    /// Tracks one file: ingest into the cache, replace the index entry with a
-    /// pointer blob, and mark the path skip-worktree.
-    pub fn track_file(&self, abs: &Path) -> Result<Option<Pointer>> {
-        let rel = self.relative(abs)?;
-        let meta =
-            std::fs::metadata(abs).with_context(|| format!("cannot read {}", abs.display()))?;
+    /// Every parameter file the pipeline references, parsed once.
+    pub fn param_cache(&self) -> Result<HashMap<String, Params>> {
+        let mut cache = HashMap::new();
+        for stage in self.pipeline.stages.values() {
+            for reference in &stage.params {
+                if cache.contains_key(&reference.file) {
+                    continue;
+                }
+                let params = Params::read_optional(&self.root.join(&reference.file))?;
+                cache.insert(reference.file.clone(), params);
+            }
+        }
+        Ok(cache)
+    }
 
-        // git-lfs never creates a pointer for an empty file, so neither do we;
-        // it stays an ordinary empty blob.
-        if !pointer::is_lfs_eligible(meta.len()) {
-            self.git.stage_path(&rel)?;
+    /// Path to git object id, for everything in the index.
+    pub fn index_shas(&self) -> Result<HashMap<String, String>> {
+        Ok(self
+            .git
+            .ls_files()?
+            .into_iter()
+            .map(|e| (e.path_str(), e.sha))
+            .collect())
+    }
+
+    /// Builds the lock entry for one path.
+    ///
+    /// The digest of an LFS-tracked file is read out of its pointer rather than
+    /// computed: the pointer *is* the sha256 of the content, so locking a
+    /// multi-gigabyte output costs a blob read instead of a full pass over the
+    /// data. Only small files that git stores literally are hashed.
+    pub fn lock_entry(&self, path: &str, index: &HashMap<String, String>) -> Result<LockEntry> {
+        let absolute = self.root.join(path);
+        let mut entry = LockEntry {
+            path: path.to_owned(),
+            hash: Some("sha256".to_owned()),
+            git_sha: index.get(path).cloned(),
+            ..Default::default()
+        };
+
+        if absolute.is_dir() {
+            let (digest, size, nfiles) = self.directory_digest(path, index)?;
+            entry.sha256 = Some(digest);
+            entry.size = Some(size);
+            entry.nfiles = Some(nfiles);
+            return Ok(entry);
+        }
+        if !absolute.is_file() {
+            return Ok(entry);
+        }
+
+        match self.pointer_for(path, index)? {
+            Some(pointer) => {
+                entry.sha256 = Some(pointer.oid.as_str().to_owned());
+                entry.size = Some(pointer.size);
+            }
+            None => {
+                let hashed =
+                    hash::hash_file(&absolute).with_context(|| format!("hashing {path}"))?;
+                entry.sha256 = Some(hashed.oid.as_str().to_owned());
+                entry.size = Some(hashed.size);
+            }
+        }
+        Ok(entry)
+    }
+
+    /// The LFS pointer git holds for `path`, if it holds one.
+    fn pointer_for(&self, path: &str, index: &HashMap<String, String>) -> Result<Option<Pointer>> {
+        let Some(sha) = index.get(path) else {
+            return Ok(None);
+        };
+        let blobs = self.git.read_blobs(std::slice::from_ref(sha))?;
+        let Some((_, content)) = blobs.first() else {
+            return Ok(None);
+        };
+        if !Pointer::could_be_pointer(content.len() as u64) {
             return Ok(None);
         }
-
-        // Guard against re-tracking an unmaterialized file: in a fresh clone the
-        // working tree holds pointer text, and hashing that would produce a
-        // pointer to a pointer, permanently losing the reference to the data.
-        if Pointer::could_be_pointer(meta.len())
-            && let Ok(content) = std::fs::read(abs)
-            && Pointer::try_from(content.as_slice()).is_ok()
-        {
-            bail!(
-                "{} contains LFS pointer text, not data — run `ds pull` first",
-                rel.display()
-            );
-        }
-
-        let ptr = self
-            .cache
-            .insert_file(abs)
-            .with_context(|| format!("caching {}", abs.display()))?;
-        let blob = self.git.write_blob(&ptr.to_bytes())?;
-        let mode = FileMode::of(abs)?;
-        self.git.stage_blob(mode, &blob, &rel)?;
-        self.git.set_skip_worktree(&rel, true)?;
-        Ok(Some(ptr))
+        Ok(Pointer::try_from(content.as_slice()).ok())
     }
 
-    /// Restores a tracked file's content from the cache.
-    pub fn materialize(&self, t: &Tracked) -> Result<()> {
-        let dest = self.git.work_tree().join(&t.path);
-        self.cache
-            .materialize(&t.pointer.oid, &dest, Materialize::default(), t.mode)
-            .with_context(|| format!("writing {}", t.path.display()))?;
-        // A fresh clone has no skip-worktree bits: the index carries them
-        // nowhere. Re-apply so git does not see the restored data as a change.
-        self.git.set_skip_worktree(&t.path, true)?;
+    /// Summarises a directory from the index rather than the filesystem, so
+    /// ignored and untracked files cannot change the recorded identity.
+    fn directory_digest(
+        &self,
+        path: &str,
+        index: &HashMap<String, String>,
+    ) -> Result<(String, u64, usize)> {
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let mut members: Vec<&String> = index.keys().filter(|p| p.starts_with(&prefix)).collect();
+        members.sort();
+
+        let mut digests = Vec::with_capacity(members.len());
+        let mut total = 0u64;
+        for member in &members {
+            let entry = self.lock_entry(member, index)?;
+            digests.push(((*member).clone(), entry.sha256.clone().unwrap_or_default()));
+            total += entry.size.unwrap_or(0);
+        }
+
+        Ok((hash::digest_of_members(&digests), total, members.len()))
+    }
+
+    /// Rebuilds the lock entry for every stage in `names`, leaving other stages
+    /// as they were.
+    ///
+    /// Called after the commands have run and their outputs are staged, so the
+    /// git ids recorded here are the ones a commit would carry.
+    pub fn relock(&mut self, names: &[String]) -> Result<()> {
+        let index = self.index_shas()?;
+        let params = self.param_cache()?;
+
+        for name in names {
+            let stage = self.pipeline.stage(name)?.clone();
+            let mut locked = LockStage {
+                cmd: stage.command_text(),
+                ..Default::default()
+            };
+
+            for reference in &stage.params {
+                let values = locked.params.entry(reference.file.clone()).or_default();
+                for key in &reference.keys {
+                    let value = params
+                        .get(&reference.file)
+                        .and_then(|p| p.get(key))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    values.insert(key.clone(), value);
+                }
+            }
+
+            for dep in stage.deps.iter() {
+                locked.deps.push(self.lock_entry(dep, &index)?);
+            }
+            for out in &stage.outs {
+                locked.outs.push(self.lock_entry(&out.path, &index)?);
+            }
+            for metric in stage.metrics.iter().chain(&stage.plots) {
+                locked.metrics.push(self.lock_entry(&metric.path, &index)?);
+            }
+
+            self.lock.stages.insert(name.clone(), locked);
+        }
+
+        // Keep the lock in pipeline order so its diffs read like the pipeline.
+        let order: Vec<String> = self.pipeline.stages.keys().cloned().collect();
+        self.lock.stages.sort_by_cached_key(|name, _| {
+            order.iter().position(|n| n == name).unwrap_or(usize::MAX)
+        });
         Ok(())
     }
 
-    /// Builds an LFS client for `remote`, resolving the endpoint and
-    /// credentials from git's own configuration.
-    pub fn client(&self, remote: &str) -> Result<Client> {
-        let url = self.git.remote_url(remote)?.with_context(|| {
-            format!("remote {remote:?} has no URL; add one with `git remote add`")
-        })?;
-        let lfs_url = self.git.config("lfs.url")?;
-        let endpoint = endpoint::determine(&url, lfs_url.as_deref())
-            .with_context(|| format!("cannot derive an LFS endpoint from {url:?}"))?;
+    /// Stages the paths a run touches: the pipeline's outputs, its parameter
+    /// files, and the lock.
+    ///
+    /// Deliberately not `git add --all`: a run must never sweep up unrelated
+    /// files a user happens to have left in the tree.
+    pub fn stage_run_outputs(&self) -> Result<()> {
+        let mut paths: Vec<String> = Vec::new();
+        for stage in self.pipeline.stages.values() {
+            paths.extend(stage.out_paths().into_iter().map(str::to_owned));
+            paths.extend(stage.params.iter().map(|p| p.file.clone()));
+        }
+        paths.push(Lock::name_for(&self.pipeline_file).to_owned());
+        paths.sort();
+        paths.dedup();
 
-        let creds = credential_fill(endpoint.as_str())
-            .with_context(|| format!("no credentials available for {endpoint}"))?;
-
-        Ok(Client::new(endpoint, &creds.username, &creds.password))
+        // A declared output a stage never produced is not an error here; the
+        // run itself already reported whatever went wrong.
+        let existing: Vec<String> = paths
+            .into_iter()
+            .filter(|p| self.root.join(p).exists())
+            .collect();
+        self.git.stage_paths(&existing)?;
+        Ok(())
     }
 
-    /// Converts an absolute path into one relative to the work tree.
-    fn relative(&self, abs: &Path) -> Result<PathBuf> {
-        let abs = abs
-            .canonicalize()
-            .with_context(|| format!("cannot resolve {}", abs.display()))?;
-        let root = self.git.work_tree().canonicalize()?;
-        let rel = abs
-            .strip_prefix(&root)
-            .with_context(|| format!("{} is outside the repository", abs.display()))?;
-        Ok(paths::normalize(rel))
-    }
-
-    /// Expands the given paths into concrete files, rejecting anything that
-    /// cannot be checked out everywhere.
-    pub fn expand(&self, inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        for input in inputs {
-            if input.is_dir() {
-                for entry in walkdir::WalkDir::new(input).follow_links(false) {
-                    let entry = entry?;
-                    // Symlinks have no meaningful content hash; skipping is
-                    // safer than silently duplicating or following a loop.
-                    if entry.file_type().is_symlink() {
-                        eprintln!("skipping symlink {}", entry.path().display());
-                        continue;
-                    }
-                    if entry.file_type().is_file() && !self.is_internal(entry.path()) {
-                        files.push(entry.path().to_path_buf());
-                    }
-                }
-            } else if input.is_file() {
-                files.push(input.clone());
-            } else {
-                bail!("{} does not exist", input.display());
-            }
+    /// Refuses to continue when the tree carries changes an experiment would
+    /// otherwise fold into its result.
+    pub fn require_clean_tree(&self) -> Result<()> {
+        let dirty: HashSet<String> = self
+            .git
+            .dirty_paths()?
+            .union(&self.git.staged_paths()?)
+            .cloned()
+            .collect();
+        if dirty.is_empty() {
+            return Ok(());
         }
 
-        let relatives: Vec<PathBuf> = files
-            .iter()
-            .map(|f| self.relative(f))
-            .collect::<Result<_>>()?;
-        paths::check_case_collisions(&relatives)?;
-
-        Ok(files)
+        let mut names: Vec<&String> = dirty.iter().collect();
+        names.sort();
+        bail!(
+            "the working tree has uncommitted changes to {} file(s), starting with {}. \
+             Commit or stash them first: an experiment records what HEAD plus its own \
+             overrides produce, and cannot tell your edits apart from its own.",
+            names.len(),
+            names[0]
+        );
     }
-
-    /// Never track git's own directory.
-    fn is_internal(&self, path: &Path) -> bool {
-        path.components().any(|c| c.as_os_str() == ".git")
-    }
-}
-
-/// True when the file at `abs` is the pointer text for `expected`.
-fn is_pointer_for(abs: &Path, expected: &Pointer) -> bool {
-    let Ok(meta) = std::fs::metadata(abs) else {
-        return false;
-    };
-    if !Pointer::could_be_pointer(meta.len()) {
-        return false;
-    }
-    std::fs::read(abs)
-        .ok()
-        .and_then(|c| Pointer::try_from(c.as_slice()).ok())
-        .is_some_and(|p| p.oid == expected.oid)
-}
-
-/// Collects the object ids for a set of tracked files.
-pub fn pointers_of(tracked: &[Tracked]) -> Vec<Pointer> {
-    tracked.iter().map(|t| t.pointer.clone()).collect()
-}
-
-/// Formats an oid for human-facing output.
-pub fn short(oid: &Oid) -> String {
-    oid.as_str()[..12].to_owned()
 }
