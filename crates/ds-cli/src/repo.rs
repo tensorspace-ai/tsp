@@ -234,6 +234,8 @@ impl Repo {
             for out in &stage.outs {
                 locked.outs.push(self.lock_entry(&out.path, &index)?);
             }
+            // Plots ride in the metrics group: the lock has no group of their
+            // own, and every reader looks a path up across all of them.
             for metric in stage.metrics.iter().chain(&stage.plots) {
                 locked.metrics.push(self.lock_entry(&metric.path, &index)?);
             }
