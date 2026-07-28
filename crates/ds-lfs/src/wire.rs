@@ -162,7 +162,8 @@ mod tests {
             }],
         };
 
-        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
         assert_eq!(v["operation"], "upload");
         assert_eq!(v["ref"]["name"], "refs/heads/main");
         assert_eq!(v["objects"][0]["oid"], OID);
@@ -246,7 +247,13 @@ mod tests {
             }]
         });
         let parsed: BatchResponse = serde_json::from_value(body).unwrap();
-        assert!(parsed.objects[0].action("download").unwrap().header.is_empty());
+        assert!(
+            parsed.objects[0]
+                .action("download")
+                .unwrap()
+                .header
+                .is_empty()
+        );
     }
 
     #[test]

@@ -12,7 +12,9 @@ use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PathError {
-    #[error("paths {first} and {second} differ only by case and cannot coexist on macOS or Windows")]
+    #[error(
+        "paths {first} and {second} differ only by case and cannot coexist on macOS or Windows"
+    )]
     CaseCollision { first: PathBuf, second: PathBuf },
 }
 

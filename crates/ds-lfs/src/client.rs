@@ -68,8 +68,8 @@ impl Client {
     pub fn new(endpoint: Url, username: &str, password: &str) -> Self {
         let auth = (!password.is_empty()).then(|| {
             use base64::Engine;
-            let raw = base64::engine::general_purpose::STANDARD
-                .encode(format!("{username}:{password}"));
+            let raw =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
             let mut v = HeaderValue::from_str(&format!("Basic {raw}"))
                 .expect("base64 is always a valid header value");
             v.set_sensitive(true);
@@ -295,8 +295,7 @@ fn link_headers(link: &Link) -> Result<HeaderMap> {
     for (k, v) in &link.header {
         let name =
             HeaderName::from_bytes(k.as_bytes()).map_err(|_| ClientError::BadHeader(k.clone()))?;
-        let mut value =
-            HeaderValue::from_str(v).map_err(|_| ClientError::BadHeader(k.clone()))?;
+        let mut value = HeaderValue::from_str(v).map_err(|_| ClientError::BadHeader(k.clone()))?;
         if name == reqwest::header::AUTHORIZATION {
             value.set_sensitive(true);
         }
@@ -382,7 +381,10 @@ mod tests {
     fn link_headers_are_copied_verbatim() {
         let l = link(
             "https://x.test/u",
-            &[("Authorization", "Bearer t"), ("Transfer-Encoding", "chunked")],
+            &[
+                ("Authorization", "Bearer t"),
+                ("Transfer-Encoding", "chunked"),
+            ],
         );
         let h = link_headers(&l).unwrap();
         assert_eq!(h.len(), 2);
@@ -401,9 +403,6 @@ mod tests {
     #[test]
     fn malformed_header_names_are_rejected() {
         let l = link("https://x.test/u", &[("Bad Header\n", "v")]);
-        assert!(matches!(
-            link_headers(&l),
-            Err(ClientError::BadHeader(_))
-        ));
+        assert!(matches!(link_headers(&l), Err(ClientError::BadHeader(_))));
     }
 }

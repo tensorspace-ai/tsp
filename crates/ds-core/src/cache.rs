@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::Digest;
 
+use crate::git::FileMode;
 use crate::hash::hash_reader;
 use crate::oid::Oid;
 use crate::pointer::Pointer;
@@ -145,7 +146,17 @@ impl Cache {
     }
 
     /// Places a cached object at `dest`, creating parent directories.
-    pub fn materialize(&self, oid: &Oid, dest: impl AsRef<Path>, how: Materialize) -> Result<()> {
+    ///
+    /// `mode` is the mode git recorded for the path. The cached object's own
+    /// permissions are never the answer: it is read-only by design and shared
+    /// between every checkout, so they say nothing about the data file.
+    pub fn materialize(
+        &self,
+        oid: &Oid,
+        dest: impl AsRef<Path>,
+        how: Materialize,
+        mode: FileMode,
+    ) -> Result<()> {
         let dest = dest.as_ref();
         let src = self.path_for(oid);
         if !src.is_file() {
@@ -161,36 +172,73 @@ impl Cache {
         }
 
         match how {
+            // A hard link shares the cached object's inode, so it also shares
+            // its permissions: setting the mode here would make the cache entry
+            // — and every other checkout linked to it — writable. Staying
+            // read-only is the trade this mode exists to make.
             Materialize::Hardlink => fs::hard_link(&src, dest).map_err(io_err(dest)),
-            Materialize::Copy => copy_writable(&src, dest),
+            Materialize::Copy => copy_with_mode(&src, dest, mode),
             Materialize::Reflink => match reflink_copy::reflink(&src, dest) {
-                Ok(()) => make_writable(dest),
+                Ok(()) => set_mode(dest, mode),
                 // Filesystem has no CoW support (or crosses a device); a plain
                 // copy is always correct, just slower.
-                Err(_) => copy_writable(&src, dest),
+                Err(_) => copy_with_mode(&src, dest, mode),
             },
         }
     }
 }
 
-/// Copies and ensures the result is writable — the cache source is read-only
-/// and `fs::copy` carries permissions across.
-fn copy_writable(src: &Path, dest: &Path) -> Result<()> {
+/// Copies and applies `mode` — `fs::copy` carries the cache's read-only
+/// permissions across, which is never what the working tree wants.
+fn copy_with_mode(src: &Path, dest: &Path, mode: FileMode) -> Result<()> {
     fs::copy(src, dest).map_err(io_err(dest))?;
-    make_writable(dest)
+    set_mode(dest, mode)
 }
 
-fn make_writable(path: &Path) -> Result<()> {
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: FileMode) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = default_file_permissions();
+    let bits = if mode.is_executable() {
+        // Execute follows read, which is what git grants an executable blob.
+        base | ((base & 0o444) >> 2)
+    } else {
+        base
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(bits)).map_err(io_err(path))
+}
+
+#[cfg(not(unix))]
+fn set_mode(path: &Path, _mode: FileMode) -> Result<()> {
     let mut perms = fs::metadata(path).map_err(io_err(path))?.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        perms.set_mode(perms.mode() | 0o600);
-    }
-    #[cfg(not(unix))]
     #[allow(clippy::permissions_set_readonly_false)]
     perms.set_readonly(false);
     fs::set_permissions(path, perms).map_err(io_err(path))
+}
+
+/// The permissions the kernel grants a newly created file, i.e. `0666` masked
+/// by the process umask.
+///
+/// Measured by creating a file rather than calling `libc::umask`, which both
+/// reads and writes the value and would race any other thread creating a file.
+/// Probed once; a umask change mid-process is not a case worth tracking.
+#[cfg(unix)]
+fn default_file_permissions() -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::OnceLock;
+
+    static PERMISSIONS: OnceLock<u32> = OnceLock::new();
+    *PERMISSIONS.get_or_init(|| {
+        let probe = || -> io::Result<u32> {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("umask-probe");
+            File::create(&path)?;
+            Ok(fs::metadata(&path)?.permissions().mode() & 0o777)
+        };
+        // 0644 is what the near-universal 022 umask yields.
+        probe().unwrap_or(0o644)
+    })
 }
 
 /// Read-only so an accidental in-place edit through a hard link cannot
@@ -233,7 +281,6 @@ impl CacheWriter {
             return Ok(());
         };
 
-
         let actual = Oid::from_bytes(&hasher.finalize().into());
         if actual != self.expected {
             // tmp drops here, removing the partial file: a corrupt transfer
@@ -261,7 +308,6 @@ impl Write for CacheWriter {
         match &mut self.state {
             WriterState::AlreadyPresent => Ok(buf.len()),
             WriterState::Writing { tmp, hasher } => {
-
                 let n = tmp.as_file_mut().write(buf)?;
                 hasher.update(&buf[..n]);
                 Ok(n)
@@ -366,7 +412,9 @@ mod tests {
             cache.insert_verified(&oid, &content[..]).unwrap();
 
             let dest = dir.path().join("nested/out.bin");
-            cache.materialize(&oid, &dest, how).unwrap();
+            cache
+                .materialize(&oid, &dest, how, FileMode::Regular)
+                .unwrap();
 
             assert_eq!(fs::read(&dest).unwrap(), content, "{how:?}");
             assert!(
@@ -378,6 +426,52 @@ mod tests {
         }
     }
 
+    /// The cache stores objects read-only and mode-less, so restoring one has
+    /// to put back the mode git recorded rather than whatever the object has.
+    #[cfg(unix)]
+    #[test]
+    fn materialize_restores_the_recorded_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for how in [Materialize::Reflink, Materialize::Copy] {
+            let (dir, cache) = cache();
+            let oid = oid_of(b"#!/bin/sh\necho hi\n");
+            cache
+                .insert_verified(&oid, &b"#!/bin/sh\necho hi\n"[..])
+                .unwrap();
+
+            let plain = dir.path().join("plain.bin");
+            cache
+                .materialize(&oid, &plain, how, FileMode::Regular)
+                .unwrap();
+            let plain_mode = fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+
+            let exe = dir.path().join("run.sh");
+            cache
+                .materialize(&oid, &exe, how, FileMode::Executable)
+                .unwrap();
+            let exe_mode = fs::metadata(&exe).unwrap().permissions().mode() & 0o777;
+
+            // A regular file comes back exactly as the umask would have made it.
+            let reference = dir.path().join("reference");
+            File::create(&reference).unwrap();
+            let expected = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+            assert_eq!(plain_mode, expected, "{how:?} did not honour the umask");
+
+            // An executable gains execute wherever read is already granted.
+            assert_eq!(
+                exe_mode,
+                expected | ((expected & 0o444) >> 2),
+                "{how:?} did not restore the executable bit"
+            );
+            assert_ne!(
+                exe_mode & 0o100,
+                0,
+                "{how:?} left the owner unable to run it"
+            );
+        }
+    }
+
     #[test]
     fn materialize_overwrites_an_existing_file() {
         let (dir, cache) = cache();
@@ -386,7 +480,9 @@ mod tests {
 
         let dest = dir.path().join("out.bin");
         fs::write(&dest, b"stale").unwrap();
-        cache.materialize(&oid, &dest, Materialize::Reflink).unwrap();
+        cache
+            .materialize(&oid, &dest, Materialize::Reflink, FileMode::Regular)
+            .unwrap();
 
         assert_eq!(fs::read(&dest).unwrap(), b"new");
     }
@@ -398,7 +494,7 @@ mod tests {
         let dest = dir.path().join("out.bin");
 
         assert!(matches!(
-            cache.materialize(&oid, &dest, Materialize::Reflink),
+            cache.materialize(&oid, &dest, Materialize::Reflink, FileMode::Regular),
             Err(CacheError::Missing(_))
         ));
         assert!(!dest.exists());

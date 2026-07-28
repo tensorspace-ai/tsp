@@ -71,6 +71,23 @@ impl FileMode {
             Self::Executable => "100755",
         }
     }
+
+    /// Reads the mode back off an index entry.
+    ///
+    /// Anything that is not a regular file — a symlink at 120000, a gitlink at
+    /// 160000 — has no data mode to restore, so it yields `None` rather than
+    /// being silently flattened to a regular file.
+    pub fn from_octal(mode: &str) -> Option<Self> {
+        match mode {
+            "100644" => Some(Self::Regular),
+            "100755" => Some(Self::Executable),
+            _ => None,
+        }
+    }
+
+    pub fn is_executable(self) -> bool {
+        matches!(self, Self::Executable)
+    }
 }
 
 /// A handle to one repository.
@@ -84,7 +101,10 @@ impl Git {
     /// Locates the repository containing `start`.
     pub fn discover(start: impl AsRef<Path>) -> Result<Self> {
         let start = start.as_ref();
-        let out = run_in(start, ["rev-parse", "--show-toplevel", "--absolute-git-dir"])?;
+        let out = run_in(
+            start,
+            ["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+        )?;
         let text = String::from_utf8_lossy(&out.stdout);
         let mut lines = text.lines();
         let (Some(work_tree), Some(git_dir)) = (lines.next(), lines.next()) else {
@@ -180,8 +200,12 @@ impl Git {
         } else {
             "--no-skip-worktree"
         };
-        self.run([OsStr::new("update-index"), OsStr::new(flag), path.as_os_str()])
-            .map(|_| ())
+        self.run([
+            OsStr::new("update-index"),
+            OsStr::new(flag),
+            path.as_os_str(),
+        ])
+        .map(|_| ())
     }
 
     /// Reads a config value, returning `None` when unset.
@@ -215,12 +239,10 @@ impl Git {
         for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
             let text = String::from_utf8_lossy(record);
             // "<mode> <sha> <stage>\t<path>"
-            let (meta, path) = text
-                .split_once('\t')
-                .ok_or_else(|| GitError::Unparseable {
-                    args: "ls-files --stage -z".into(),
-                    detail: text.to_string(),
-                })?;
+            let (meta, path) = text.split_once('\t').ok_or_else(|| GitError::Unparseable {
+                args: "ls-files --stage -z".into(),
+                detail: text.to_string(),
+            })?;
             let mut fields = meta.split_whitespace();
             let (Some(mode), Some(sha)) = (fields.next(), fields.next()) else {
                 return Err(GitError::Unparseable {
@@ -564,7 +586,9 @@ mod tests {
     #[test]
     fn read_blobs_returns_contents_for_many_objects() {
         let (_d, git) = repo();
-        let bodies: Vec<Vec<u8>> = (0..25).map(|i| format!("body {i}\n").into_bytes()).collect();
+        let bodies: Vec<Vec<u8>> = (0..25)
+            .map(|i| format!("body {i}\n").into_bytes())
+            .collect();
         let shas: Vec<String> = bodies.iter().map(|b| git.write_blob(b).unwrap()).collect();
 
         let got = git.read_blobs(&shas).unwrap();

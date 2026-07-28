@@ -9,11 +9,13 @@ use ds_core::{Oid, Pointer, hash, paths, pointer};
 use ds_lfs::Client;
 use ds_lfs::endpoint;
 
-/// A dataset file: where it lives and what it points at.
+/// A dataset file: where it lives, what it points at, and the mode git holds
+/// for it — without which `ds pull` cannot restore an executable as executable.
 #[derive(Clone, Debug)]
 pub struct Tracked {
     pub path: PathBuf,
     pub pointer: Pointer,
+    pub mode: FileMode,
 }
 
 /// What `ds status` reports for one tracked file.
@@ -74,10 +76,14 @@ impl Repo {
             if !Pointer::could_be_pointer(content.len() as u64) {
                 continue;
             }
+            let Some(mode) = FileMode::from_octal(&entry.mode) else {
+                continue;
+            };
             if let Ok(p) = Pointer::try_from(content.as_slice()) {
                 tracked.push(Tracked {
                     path: entry.path.clone(),
                     pointer: p,
+                    mode,
                 });
             }
         }
@@ -116,8 +122,8 @@ impl Repo {
     /// pointer blob, and mark the path skip-worktree.
     pub fn track_file(&self, abs: &Path) -> Result<Option<Pointer>> {
         let rel = self.relative(abs)?;
-        let meta = std::fs::metadata(abs)
-            .with_context(|| format!("cannot read {}", abs.display()))?;
+        let meta =
+            std::fs::metadata(abs).with_context(|| format!("cannot read {}", abs.display()))?;
 
         // git-lfs never creates a pointer for an empty file, so neither do we;
         // it stays an ordinary empty blob.
@@ -154,7 +160,7 @@ impl Repo {
     pub fn materialize(&self, t: &Tracked) -> Result<()> {
         let dest = self.git.work_tree().join(&t.path);
         self.cache
-            .materialize(&t.pointer.oid, &dest, Materialize::default())
+            .materialize(&t.pointer.oid, &dest, Materialize::default(), t.mode)
             .with_context(|| format!("writing {}", t.path.display()))?;
         // A fresh clone has no skip-worktree bits: the index carries them
         // nowhere. Re-apply so git does not see the restored data as a change.
@@ -165,10 +171,9 @@ impl Repo {
     /// Builds an LFS client for `remote`, resolving the endpoint and
     /// credentials from git's own configuration.
     pub fn client(&self, remote: &str) -> Result<Client> {
-        let url = self
-            .git
-            .remote_url(remote)?
-            .with_context(|| format!("remote {remote:?} has no URL; add one with `git remote add`"))?;
+        let url = self.git.remote_url(remote)?.with_context(|| {
+            format!("remote {remote:?} has no URL; add one with `git remote add`")
+        })?;
         let lfs_url = self.git.config("lfs.url")?;
         let endpoint = endpoint::determine(&url, lfs_url.as_deref())
             .with_context(|| format!("cannot derive an LFS endpoint from {url:?}"))?;
@@ -227,8 +232,7 @@ impl Repo {
 
     /// Never track git's own directory.
     fn is_internal(&self, path: &Path) -> bool {
-        path.components()
-            .any(|c| c.as_os_str() == ".git")
+        path.components().any(|c| c.as_os_str() == ".git")
     }
 }
 

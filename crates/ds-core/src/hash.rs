@@ -28,7 +28,10 @@ pub fn hash_reader(mut r: impl Read) -> io::Result<Pointer> {
         size += n as u64;
     }
 
-    Ok(Pointer::new(Oid::from_bytes(&hasher.finalize().into()), size))
+    Ok(Pointer::new(
+        Oid::from_bytes(&hasher.finalize().into()),
+        size,
+    ))
 }
 
 /// Hashes a file on disk.
