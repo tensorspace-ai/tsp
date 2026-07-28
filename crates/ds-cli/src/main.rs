@@ -9,6 +9,7 @@
 
 mod exp;
 
+mod plots;
 mod repo;
 mod run;
 
@@ -55,6 +56,15 @@ enum Command {
         #[arg(long)]
         compare: Option<String>,
     },
+    /// Render the pipeline's plots to a self-contained HTML page
+    Plots {
+        /// Revisions to draw. With none, HEAD is compared with the working
+        /// tree; the working tree is always included.
+        revisions: Vec<String>,
+        /// Directory to write into
+        #[arg(long, default_value = plots::OUT_DIR)]
+        out: String,
+    },
     /// Run and compare parameter experiments
     Exp(ExpArgs),
 }
@@ -98,6 +108,7 @@ fn main() -> Result<()> {
         Command::Repro { stage, force } => repro(&cwd, stage.as_deref(), force),
         Command::Status => status(&cwd),
         Command::Metrics { compare } => show_metrics(&cwd, compare.as_deref()),
+        Command::Plots { revisions, out } => show_plots(&cwd, &revisions, &out),
         Command::Exp(args) => match args.command {
             ExpCommand::Run { set, name } => exp_run(&cwd, &set, name.as_deref()),
             ExpCommand::List => exp_list(&cwd),
@@ -302,6 +313,30 @@ fn print_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &
             row.compare.as_deref().unwrap_or("-"),
         );
     }
+}
+
+fn show_plots(cwd: &std::path::Path, revisions: &[String], out: &str) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let revs = plots::revisions(revisions);
+    let figures = plots::build(&repo, &revs)?;
+
+    if figures.is_empty() {
+        println!("No plots declared. Add a `plots:` entry to a stage, or a top-level");
+        println!("`plots:` section naming the files to draw.");
+        return Ok(());
+    }
+
+    let path = plots::write_page(&repo, &figures, out)?;
+    for figure in &figures {
+        let detail = match &figure.figure {
+            ds_core::figure::Figure::Empty { reason } => format!(" — {reason}"),
+            _ => String::new(),
+        };
+        println!("  {} ({}){detail}", figure.name, figure.template);
+    }
+    println!("\nComparing {}.", revs.join(" vs "));
+    println!("file://{}", path.display());
+    Ok(())
 }
 
 fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>) -> Result<()> {

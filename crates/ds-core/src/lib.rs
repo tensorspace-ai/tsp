@@ -11,6 +11,7 @@
 //! which parses both to render the DAG. They stay compatible with DVC's
 //! `dvc.yaml`/`dvc.lock` so existing repositories work unchanged.
 
+pub mod figure;
 pub mod git;
 pub mod graph;
 pub mod hash;
@@ -20,7 +21,10 @@ pub mod oid;
 pub mod params;
 pub mod paths;
 pub mod pipeline;
+pub mod plotdata;
+pub mod plots;
 pub mod pointer;
+pub mod svg;
 
 pub use lock::{Lock, LockEntry, LockStage};
 pub use oid::Oid;

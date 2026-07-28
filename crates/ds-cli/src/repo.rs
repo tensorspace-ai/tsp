@@ -236,8 +236,14 @@ impl Repo {
             }
             // Plots ride in the metrics group: the lock has no group of their
             // own, and every reader looks a path up across all of them.
-            for metric in stage.metrics.iter().chain(&stage.plots) {
-                locked.metrics.push(self.lock_entry(&metric.path, &index)?);
+            let plot_paths = stage.plots.iter().map(|p| p.artifact.path.as_str());
+            for path in stage
+                .metrics
+                .iter()
+                .map(|m| m.path.as_str())
+                .chain(plot_paths)
+            {
+                locked.metrics.push(self.lock_entry(path, &index)?);
             }
 
             self.lock.stages.insert(name.clone(), locked);

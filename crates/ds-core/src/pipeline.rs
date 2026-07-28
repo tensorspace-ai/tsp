@@ -9,6 +9,8 @@
 use std::path::Path;
 
 use indexmap::IndexMap;
+
+use crate::plots::{self, Plot};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +46,11 @@ pub const FILE_NAMES: [&str; 2] = ["ds.yaml", "dvc.yaml"];
 pub struct Pipeline {
     #[serde(default)]
     pub stages: IndexMap<String, Stage>,
+    /// Plots declared for the pipeline as a whole. Unlike a stage's own plots
+    /// these are not artifacts: an entry may carry a display name and pull its
+    /// data from several files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plots: TopPlots,
 }
 
 /// One node of the pipeline.
@@ -60,7 +67,7 @@ pub struct Stage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<Artifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub plots: Vec<Artifact>,
+    pub plots: Vec<PlotArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<ParamRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,9 +114,14 @@ impl Stage {
         self.outs
             .iter()
             .chain(&self.metrics)
-            .chain(&self.plots)
             .map(|a| a.path.as_str())
+            .chain(self.plots.iter().map(|p| p.artifact.path.as_str()))
             .collect()
+    }
+
+    /// The plots this stage declares, normalised for drawing.
+    pub fn plot_defs(&self) -> Vec<&Plot> {
+        self.plots.iter().map(|p| &p.plot).collect()
     }
 
     /// The command as a shell would see it, one line per entry.
@@ -137,6 +149,98 @@ impl Artifact {
             cache: true,
             persist: false,
         }
+    }
+}
+
+impl Default for Artifact {
+    /// `cache: true` is the default a bare path implies, so an empty artifact
+    /// has to agree with `new` rather than with `bool::default`.
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}
+
+/// A `plots:` entry inside a stage: an artifact that also says how to draw
+/// itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlotArtifact {
+    pub artifact: Artifact,
+    pub plot: Plot,
+}
+
+impl<'de> Deserialize<'de> for PlotArtifact {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let (artifact, options) = match wire::PlotWire::deserialize(d)? {
+            wire::PlotWire::Path(path) => (Artifact::new(path), plots::Options::default()),
+            wire::PlotWire::Mapping(map) => match map.into_iter().next() {
+                Some((path, options)) => {
+                    let options = options.unwrap_or_default();
+                    (
+                        Artifact {
+                            path: path.clone(),
+                            cache: options.cache.unwrap_or(true),
+                            persist: options.persist.unwrap_or(false),
+                        },
+                        options,
+                    )
+                }
+                None => (Artifact::new(String::new()), plots::Options::default()),
+            },
+        };
+
+        let plot = plots::from_artifact(&artifact.path, &options);
+        Ok(Self { artifact, plot })
+    }
+}
+
+impl Serialize for PlotArtifact {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        self.artifact.path.serialize(s)
+    }
+}
+
+/// The top-level `plots:` section.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TopPlots(pub Vec<Plot>);
+
+impl std::ops::Deref for TopPlots {
+    type Target = Vec<Plot>;
+    fn deref(&self) -> &Vec<Plot> {
+        &self.0
+    }
+}
+
+impl TopPlots {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for TopPlots {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let entries = Vec::<wire::PlotWire>::deserialize(d)?;
+        Ok(Self(
+            entries
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    wire::PlotWire::Path(path) => {
+                        Some(plots::from_top_level(&path, &plots::Options::default()))
+                    }
+                    wire::PlotWire::Mapping(map) => {
+                        map.into_iter().next().map(|(name, options)| {
+                            plots::from_top_level(&name, &options.unwrap_or_default())
+                        })
+                    }
+                })
+                .collect(),
+        ))
+    }
+}
+
+impl Serialize for TopPlots {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let names: Vec<&str> = self.0.iter().map(|p| p.name.as_str()).collect();
+        names.serialize(s)
     }
 }
 
@@ -200,6 +304,13 @@ mod wire {
     pub enum ParamWire {
         Key(String),
         Scoped(IndexMap<String, Option<Vec<String>>>),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    pub enum PlotWire {
+        Path(String),
+        Mapping(IndexMap<String, Option<plots::Options>>),
     }
 }
 
@@ -375,6 +486,75 @@ stages:
     fn an_unknown_stage_is_named_in_the_error() {
         let err = sample().stage("nope").unwrap_err();
         assert!(err.to_string().contains("nope"), "{err}");
+    }
+
+    /// A stage's plot entry is both an artifact and a drawing instruction, and
+    /// the two must not interfere: `cache` belongs to the artifact, `template`
+    /// to the plot.
+    #[test]
+    fn a_stage_plot_carries_both_storage_and_drawing_options() {
+        let p = Pipeline::parse(
+            "stages:\n  evaluate:\n    cmd: e\n    plots:\n      - plots/confusion.json:\n          template: confusion\n          x: predicted\n          y: actual\n          cache: false\n",
+            "ds.yaml",
+        )
+        .unwrap();
+
+        let entry = &p.stage("evaluate").unwrap().plots[0];
+        assert_eq!(entry.artifact.path, "plots/confusion.json");
+        assert!(
+            !entry.artifact.cache,
+            "cache: false must reach the artifact"
+        );
+        assert_eq!(entry.plot.template, plots::Template::Confusion);
+        assert_eq!(entry.plot.sources[0].x.as_deref(), Some("predicted"));
+    }
+
+    #[test]
+    fn a_bare_plot_path_still_produces_a_plot() {
+        let p = Pipeline::parse(
+            "stages:\n  a:\n    cmd: x\n    plots: [plots/loss.csv]\n",
+            "ds.yaml",
+        )
+        .unwrap();
+
+        let entry = &p.stage("a").unwrap().plots[0];
+        assert!(entry.artifact.cache);
+        assert_eq!(entry.plot.template, plots::Template::Linear);
+        assert_eq!(entry.plot.files(), ["plots/loss.csv"]);
+    }
+
+    #[test]
+    fn plots_are_still_stage_outputs() {
+        let p = Pipeline::parse(
+            "stages:\n  a:\n    cmd: x\n    outs: [m.bin]\n    metrics: [m.json]\n    plots: [p.csv]\n",
+            "ds.yaml",
+        )
+        .unwrap();
+        assert_eq!(
+            p.stage("a").unwrap().out_paths(),
+            ["m.bin", "m.json", "p.csv"]
+        );
+    }
+
+    #[test]
+    fn a_top_level_plot_section_is_parsed() {
+        let p = Pipeline::parse(
+            "stages:\n  a:\n    cmd: x\nplots:\n  - Precision-Recall:\n      template: smooth\n      x: recall\n      y:\n        eval/prc.json: precision\n  - plots/roc.csv:\n      x: fpr\n      y: tpr\n",
+            "ds.yaml",
+        )
+        .unwrap();
+
+        assert_eq!(p.plots.len(), 2);
+        assert_eq!(p.plots[0].name, "Precision-Recall");
+        assert_eq!(p.plots[0].template, plots::Template::Smooth);
+        assert_eq!(p.plots[0].files(), ["eval/prc.json"]);
+        assert_eq!(p.plots[1].files(), ["plots/roc.csv"]);
+    }
+
+    #[test]
+    fn a_pipeline_without_plots_has_none() {
+        let p = Pipeline::parse("stages:\n  a:\n    cmd: x\n", "ds.yaml").unwrap();
+        assert!(p.plots.is_empty());
     }
 
     #[test]
