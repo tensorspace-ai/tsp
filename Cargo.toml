@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/ds-core", "crates/ds-lfs", "crates/ds-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/jbenjoseph/ds"
+
+[workspace.dependencies]
+ds-core = { version = "0.1.0", path = "crates/ds-core" }
+ds-lfs = { version = "0.1.0", path = "crates/ds-lfs" }
+
+# Release profile tuned for a short-lived CLI that moves a lot of bytes: the
+# hot paths are sha256 hashing and copy loops, both of which benefit from LTO.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

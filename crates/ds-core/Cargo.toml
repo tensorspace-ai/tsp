@@ -1,0 +1,17 @@
+[package]
+name = "ds-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hex = "0.4.3"
+reflink-copy = "0.1.30"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+tempfile = "3.27.0"
+thiserror = "2.0.19"
+unicode-normalization = "0.1.25"
+walkdir = "2.5.0"
