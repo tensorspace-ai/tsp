@@ -509,7 +509,7 @@ mod tests {
 
         let x = svg
             .split("class=\"ds-plot-value\"")
-            .nth(0)
+            .next()
             .and_then(|before| before.rsplit("<text x=\"").next())
             .and_then(|s| s.split('"').next())
             .and_then(|s| s.parse::<f64>().ok())
