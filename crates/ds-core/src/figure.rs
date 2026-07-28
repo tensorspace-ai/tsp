@@ -193,12 +193,13 @@ fn xy(plot: &Plot, loaded: &Loaded) -> Figure {
 fn label_for(plot: &Plot, source: &Source, field: &str, rev: &str, multi_rev: bool) -> String {
     let one_source = plot.sources.len() == 1;
     let one_field = plot.sources.iter().all(|s| s.y.len() <= 1);
+    let file = &source.file[common_dir_prefix(&plot.files()).len()..];
 
     let own = match (one_source, one_field) {
         (true, true) => String::new(),
         (true, false) => field.to_owned(),
-        (false, true) => source.file.clone(),
-        (false, false) => format!("{}::{field}", source.file),
+        (false, true) => file.to_owned(),
+        (false, false) => format!("{file}::{field}"),
     };
 
     match (multi_rev, own.is_empty()) {
@@ -206,6 +207,28 @@ fn label_for(plot: &Plot, source: &Source, field: &str, rev: &str, multi_rev: bo
         (true, false) => format!("{rev} · {own}"),
         (false, true) => field.to_owned(),
         (false, false) => own,
+    }
+}
+
+/// The directory prefix every source shares, which says nothing about which
+/// series is which.
+fn common_dir_prefix(files: &[&str]) -> String {
+    if files.len() < 2 {
+        return String::new();
+    }
+    let segments: Vec<&str> = files[0].split('/').collect();
+
+    let mut shared = 0;
+    while shared + 1 < segments.len() {
+        let candidate = format!("{}/", segments[..=shared].join("/"));
+        if !files.iter().all(|f| f.starts_with(&candidate)) {
+            break;
+        }
+        shared += 1;
+    }
+    match shared {
+        0 => String::new(),
+        n => format!("{}/", segments[..n].join("/")),
     }
 }
 
@@ -565,6 +588,19 @@ mod tests {
             panic!("expected an empty figure")
         };
         assert!(reason.contains("numeric"), "{reason}");
+    }
+
+    /// A shared directory says nothing about which series is which.
+    #[test]
+    fn series_labels_drop_the_prefix_every_file_shares() {
+        assert_eq!(common_dir_prefix(&["plots/a.csv", "plots/b.csv"]), "plots/");
+        assert_eq!(
+            common_dir_prefix(&["eval/train/roc.json", "eval/test/roc.json"]),
+            "eval/"
+        );
+        // Nothing in common, and a lone file, both keep the whole path.
+        assert_eq!(common_dir_prefix(&["a/x.csv", "b/x.csv"]), "");
+        assert_eq!(common_dir_prefix(&["plots/only.csv"]), "");
     }
 
     #[test]
