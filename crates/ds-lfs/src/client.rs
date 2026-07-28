@@ -37,6 +37,11 @@ pub enum ClientError {
     },
     #[error("server response for {0} omitted the {1:?} action")]
     MissingAction(Oid, &'static str),
+    #[error(
+        "the server wants {0} but it is not in the local cache; \
+         run `ds pull` to fetch it, or re-track the file it belongs to"
+    )]
+    NotCached(Oid),
     #[error("cache error: {0}")]
     Cache(#[from] ds_core::cache::CacheError),
     #[error("io error: {0}")]
@@ -170,6 +175,14 @@ impl Client {
                 summary.already_present += 1;
                 continue;
             };
+
+            // Only an object the server actually asks for has to be local. A
+            // clone that never ran `ds pull` still has every pointer in its
+            // index, and demanding those bytes up front would refuse a push
+            // that has nothing to upload.
+            if !cache.contains(&oid) {
+                return Err(ClientError::NotCached(oid));
+            }
 
             self.put_object(cache, &oid, object.pointer.size, link)
                 .await?;

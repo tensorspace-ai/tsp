@@ -226,6 +226,18 @@ impl Git {
         self.config(&format!("remote.{remote}.url"))
     }
 
+    /// Switches the working tree to `rev`.
+    ///
+    /// The only porcelain command in this module. Branch switching has no
+    /// plumbing equivalent short of reimplementing `unpack_trees`, and nothing
+    /// here parses the output — only the exit status is used, which is stable.
+    pub fn checkout(&self, rev: &str) -> Result<()> {
+        // The trailing `--` stops a ref that looks like a path from being read
+        // as one, which would silently restore files instead of switching.
+        self.run(["checkout", "--end-of-options", rev, "--"])
+            .map(|_| ())
+    }
+
     /// Resolves a revision to a full object id.
     pub fn rev_parse(&self, rev: &str) -> Result<String> {
         let out = self.run(["rev-parse", "--verify", "--end-of-options", rev])?;

@@ -291,6 +291,121 @@ fn git_objects_stay_small_while_the_cache_holds_the_data() {
     assert!(dir_size(&f.root.join(".git/ds/cache")) >= 1_000_000);
 }
 
+/// Plain `git checkout` cannot switch away from a branch whose tracked data
+/// differs: skip-worktree tells git the file is absent, and finding it present
+/// makes the switch abort. `ds checkout` is the way through.
+#[test]
+fn checkout_switches_branches_when_tracked_data_differs() {
+    let f = Fixture::new();
+    let first = payload(300_000);
+    f.write("data/model.bin", &first);
+    f.ds_ok(&["init"]);
+    f.ds_ok(&["track", "data/model.bin"]);
+    f.git(&["commit", "-qm", "first model"]);
+
+    f.git(&["checkout", "-q", "-b", "retrained"]);
+    let second = payload(450_000);
+    f.write("data/model.bin", &second);
+    f.ds_ok(&["track", "data/model.bin"]);
+    f.git(&["commit", "-qm", "second model"]);
+
+    // The failure this command exists to route around.
+    let blocked = Command::new("git")
+        .current_dir(&f.root)
+        .args(["checkout", "main"])
+        .output()
+        .unwrap();
+    assert!(
+        !blocked.status.success(),
+        "git checkout unexpectedly succeeded; ds checkout may no longer be needed"
+    );
+
+    f.ds_ok(&["checkout", "main"]);
+
+    assert_eq!(f.git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
+    assert_eq!(
+        std::fs::read(f.root.join("data/model.bin")).unwrap(),
+        first,
+        "the branch's own data was not restored"
+    );
+    assert!(
+        f.ds_ok(&["status"]).contains("1 current"),
+        "restored data should not read as modified"
+    );
+
+    // And back again, to prove the return trip is not a one-way door.
+    f.ds_ok(&["checkout", "retrained"]);
+    assert_eq!(
+        std::fs::read(f.root.join("data/model.bin")).unwrap(),
+        second
+    );
+}
+
+/// Switching must never be the thing that loses data, so untracked edits stop
+/// it rather than being deleted along the way.
+#[test]
+fn checkout_refuses_to_discard_modified_data() {
+    let f = Fixture::new();
+    f.write("data/model.bin", &payload(300_000));
+    f.ds_ok(&["init"]);
+    f.ds_ok(&["track", "data/model.bin"]);
+    f.git(&["commit", "-qm", "model"]);
+    f.git(&["checkout", "-q", "-b", "other"]);
+
+    let edited = payload(310_000);
+    f.write("data/model.bin", &edited);
+
+    let out = f.ds(&["checkout", "main"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not tracked yet"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(f.root.join("data/model.bin")).unwrap(),
+        edited,
+        "a refused checkout must leave the working tree alone"
+    );
+}
+
+/// `ds init` wires data uploads into `git push`, the way git-lfs does.
+#[test]
+fn init_installs_a_pre_push_hook() {
+    let f = Fixture::new();
+    f.ds_ok(&["init"]);
+
+    let hook = std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap();
+    assert!(hook.contains("ds-push"), "{hook}");
+    assert!(hook.contains("ds push"), "{hook}");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(f.root.join(".git/hooks/pre-push"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0, "the hook must be executable");
+    }
+}
+
+/// A hook the user wrote is theirs; `ds init` warns instead of overwriting it.
+#[test]
+fn init_leaves_a_foreign_pre_push_hook_alone() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.root.join(".git/hooks")).unwrap();
+    f.write(".git/hooks/pre-push", b"#!/bin/sh\necho mine\n");
+
+    let out = f.ds(&["init"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(
+        std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap(),
+        "#!/bin/sh\necho mine\n"
+    );
+}
+
 fn dir_size(path: &Path) -> u64 {
     walkdir::WalkDir::new(path)
         .into_iter()

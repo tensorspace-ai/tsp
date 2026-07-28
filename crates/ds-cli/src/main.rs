@@ -32,6 +32,11 @@ enum Command {
     },
     /// Show what is tracked and whether it is present
     Status,
+    /// Switch branches, moving tracked data out of git's way
+    Checkout {
+        /// Branch, tag or commit to switch to
+        rev: String,
+    },
     /// Upload tracked objects to the remote's LFS store
     Push {
         #[arg(long, default_value = "origin")]
@@ -52,6 +57,7 @@ fn main() -> Result<()> {
         Command::Init => init(&cwd),
         Command::Track { paths } => track(&cwd, &paths),
         Command::Status => status(&cwd),
+        Command::Checkout { rev } => checkout(&cwd, &rev),
         Command::Push { remote } => block_on(push(cwd, remote)),
         Command::Pull { remote } => block_on(pull(cwd, remote)),
     }
@@ -68,38 +74,37 @@ fn block_on<F: std::future::Future<Output = Result<()>>>(fut: F) -> Result<()> {
 fn init(cwd: &std::path::Path) -> Result<()> {
     let repo = Repo::open(cwd)?;
     std::fs::create_dir_all(repo.cache().root())?;
-    install_guard_hook(&repo)?;
+    install_hook(&repo, "pre-commit", "ds-guard", GUARD_HOOK)?;
+    install_hook(&repo, "pre-push", "ds-push", PUSH_HOOK)?;
 
     println!("Initialized ds in {}", repo.git().work_tree().display());
     println!("  cache: {}", repo.cache().root().display());
-    println!("\nTrack data with `ds track <path>`, then `git commit` and `ds push`.");
+    println!("\nTrack data with `ds track <path>`, then `git commit` and `git push`.");
     Ok(())
 }
 
-/// Installs a pre-commit hook rejecting large non-pointer blobs.
+/// Installs one of our hooks, refusing to clobber a hook someone else owns.
 ///
-/// `ds` deliberately installs no `filter=lfs` gitattribute, which means there
-/// is no clean filter to catch a stray `git add` of a huge file. A multi-GB
-/// blob committed by accident cannot be removed without rewriting history, so
-/// this hook is the safety rail that makes the no-filter design safe.
-fn install_guard_hook(repo: &Repo) -> Result<()> {
+/// `marker` is the string our own script carries, so re-running `ds init` over
+/// a hook we wrote is silent while a hook the user wrote is left alone.
+fn install_hook(repo: &Repo, name: &str, marker: &str, body: &str) -> Result<()> {
     let hooks = repo.git().git_dir().join("hooks");
     std::fs::create_dir_all(&hooks)?;
-    let path = hooks.join("pre-commit");
+    let path = hooks.join(name);
 
     if path.exists() {
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if !existing.contains("ds-guard") {
+        if !existing.contains(marker) {
             eprintln!(
                 "warning: {} already exists and was left alone; \
-                 large-file protection is not installed",
+                 add `{marker}` to it by hand to keep ds working",
                 path.display()
             );
         }
         return Ok(());
     }
 
-    std::fs::write(&path, GUARD_HOOK)?;
+    std::fs::write(&path, body)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -127,6 +132,25 @@ git diff --cached --name-only --diff-filter=ACM | while IFS= read -r path; do
     fi
 done || fail=1
 exit $fail
+"#;
+
+/// Uploads objects as part of `git push`, which is how git-lfs behaves.
+///
+/// git-lfs is transparent through two independent mechanisms: clean/smudge
+/// filters, which `ds` deliberately does without, and this hook, which it has
+/// no reason to. Pushing the pointers without the bytes they name is what
+/// leaves a remote holding references to data nobody can fetch.
+///
+/// git passes the remote name as $1, and `ds push` reports its own errors, so a
+/// failure here fails the push — the same contract git-lfs's hook has.
+const PUSH_HOOK: &str = r#"#!/bin/sh
+# ds-push: upload tracked data before the pointers referring to it are pushed.
+# Bypass with `git push --no-verify` if you mean to push pointers alone.
+command -v ds >/dev/null 2>&1 || {
+    echo "ds: not on PATH; skipping data upload" >&2
+    exit 0
+}
+exec ds push --remote "${1:-origin}"
 "#;
 
 fn track(cwd: &std::path::Path, paths: &[PathBuf]) -> Result<()> {
@@ -196,6 +220,86 @@ fn status(cwd: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Switches branches, which plain `git checkout` cannot do here.
+///
+/// A tracked path is `skip-worktree`, which git reads as "this file is not in
+/// the working tree" — the sparse-checkout contract. `ds` breaks that half of
+/// the deal on purpose: the file *is* there, holding the data rather than the
+/// pointer. So the moment a tracked file differs between two commits, git
+/// refuses to switch and `-f` does not help either:
+///
+/// ```text
+/// error: Entry 'models/model.joblib' not uptodate. Cannot merge.
+/// ```
+///
+/// The way out is to take the data out of git's way, let git do the switch
+/// against what it thinks is an empty slot, and put the data back afterwards.
+/// Nothing is downloaded: the objects are content-addressed in the cache.
+fn checkout(cwd: &std::path::Path, rev: &str) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let before = repo.tracked()?;
+
+    let mut moved_aside = Vec::new();
+    for t in &before {
+        match repo.state_of(t) {
+            // Removing this would destroy the only copy of the data.
+            State::Modified => anyhow::bail!(
+                "{} has changes that are not tracked yet; \
+                 run `ds track {}` or restore it before switching",
+                t.path.display(),
+                t.path.display()
+            ),
+            State::Current => {
+                // Current means the bytes hash to the pointer, so caching them
+                // is a verified no-op when the object is already there — and
+                // the difference between safe and lossy when it is not.
+                if !repo.cache().contains(&t.pointer.oid) {
+                    repo.cache()
+                        .insert_file(repo.git().work_tree().join(&t.path))
+                        .with_context(|| format!("caching {}", t.path.display()))?;
+                }
+                moved_aside.push(t.clone());
+            }
+            // Pointer text, which git can write again from the index.
+            State::NotMaterialized => moved_aside.push(t.clone()),
+            // Already absent from the working tree; nothing is in git's way.
+            State::Cached | State::Missing => {}
+        }
+    }
+
+    for t in &moved_aside {
+        let abs = repo.git().work_tree().join(&t.path);
+        std::fs::remove_file(&abs)
+            .with_context(|| format!("clearing {} before checkout", t.path.display()))?;
+    }
+
+    if let Err(err) = repo.git().checkout(rev) {
+        // Leave the working tree as it was found rather than stripped of data.
+        for t in &moved_aside {
+            let _ = repo.materialize(t);
+        }
+        return Err(err).with_context(|| format!("switching to {rev}"));
+    }
+
+    let (mut restored, mut absent) = (0usize, 0usize);
+    for t in &repo.tracked()? {
+        if !repo.cache().contains(&t.pointer.oid) {
+            absent += 1;
+            continue;
+        }
+        if repo.state_of(t) != State::Current {
+            repo.materialize(t)?;
+            restored += 1;
+        }
+    }
+
+    println!("Switched to {rev}; restored {restored} file(s) from the cache.");
+    if absent > 0 {
+        println!("{absent} file(s) are not cached locally — run `ds pull` to fetch them.");
+    }
+    Ok(())
+}
+
 fn label(state: State) -> &'static str {
     match state {
         State::Current => "current",
@@ -214,19 +318,8 @@ async fn push(cwd: PathBuf, remote: String) -> Result<()> {
         return Ok(());
     }
 
-    let absent: Vec<_> = tracked
-        .iter()
-        .filter(|t| !repo.cache().contains(&t.pointer.oid))
-        .collect();
-    if !absent.is_empty() {
-        anyhow::bail!(
-            "{} tracked object(s) are not in the local cache, starting with {}. \
-             Run `ds pull` first, or re-track them.",
-            absent.len(),
-            absent[0].path.display()
-        );
-    }
-
+    // Which objects need bytes is the server's answer, not ours: it is asked in
+    // the batch request, and everything it already holds needs nothing local.
     let client = repo.client(&remote)?;
     let summary = client
         .upload(repo.cache(), &pointers_of(&tracked))
