@@ -128,17 +128,22 @@ impl Repo {
     /// computed: the pointer *is* the sha256 of the content, so locking a
     /// multi-gigabyte output costs a blob read instead of a full pass over the
     /// data. Only small files that git stores literally are hashed.
-    pub fn lock_entry(&self, path: &str, index: &HashMap<String, String>) -> Result<LockEntry> {
+    pub fn lock_entry(
+        &self,
+        path: &str,
+        index: &HashMap<String, String>,
+        dirty: &HashSet<String>,
+    ) -> Result<LockEntry> {
         let absolute = self.root.join(path);
         let mut entry = LockEntry {
             path: path.to_owned(),
             hash: Some("sha256".to_owned()),
-            git_sha: index.get(path).cloned(),
+            git_sha: self.blob_id(path, index, dirty)?,
             ..Default::default()
         };
 
         if absolute.is_dir() {
-            let (digest, size, nfiles) = self.directory_digest(path, index)?;
+            let (digest, size, nfiles) = self.directory_digest(path, index, dirty)?;
             entry.sha256 = Some(digest);
             entry.size = Some(size);
             entry.nfiles = Some(nfiles);
@@ -163,6 +168,31 @@ impl Repo {
         Ok(entry)
     }
 
+    /// The object id this path will carry once committed.
+    ///
+    /// The index is the cheap answer and the right one for anything already
+    /// staged — which includes every output, since a run stages them before
+    /// locking. A dependency the user has edited but not staged is the case
+    /// that matters: taking the index id there would record the *previous*
+    /// content, and the stage would read stale the moment the edit is
+    /// committed.
+    fn blob_id(
+        &self,
+        path: &str,
+        index: &HashMap<String, String>,
+        dirty: &HashSet<String>,
+    ) -> Result<Option<String>> {
+        if !dirty.contains(path)
+            && let Some(sha) = index.get(path)
+        {
+            return Ok(Some(sha.clone()));
+        }
+        if !self.root.join(path).is_file() {
+            return Ok(index.get(path).cloned());
+        }
+        Ok(Some(self.git.hash_working_file(path)?))
+    }
+
     /// The LFS pointer git holds for `path`, if it holds one.
     fn pointer_for(&self, path: &str, index: &HashMap<String, String>) -> Result<Option<Pointer>> {
         let Some(sha) = index.get(path) else {
@@ -184,6 +214,7 @@ impl Repo {
         &self,
         path: &str,
         index: &HashMap<String, String>,
+        dirty: &HashSet<String>,
     ) -> Result<(String, u64, usize)> {
         let prefix = format!("{}/", path.trim_end_matches('/'));
         let mut members: Vec<&String> = index.keys().filter(|p| p.starts_with(&prefix)).collect();
@@ -192,7 +223,7 @@ impl Repo {
         let mut digests = Vec::with_capacity(members.len());
         let mut total = 0u64;
         for member in &members {
-            let entry = self.lock_entry(member, index)?;
+            let entry = self.lock_entry(member, index, dirty)?;
             digests.push(((*member).clone(), entry.sha256.clone().unwrap_or_default()));
             total += entry.size.unwrap_or(0);
         }
@@ -207,6 +238,7 @@ impl Repo {
     /// git ids recorded here are the ones a commit would carry.
     pub fn relock(&mut self, names: &[String]) -> Result<()> {
         let index = self.index_shas()?;
+        let dirty = self.git.dirty_paths()?;
         let params = self.param_cache()?;
 
         for name in names {
@@ -229,10 +261,12 @@ impl Repo {
             }
 
             for dep in stage.deps.iter() {
-                locked.deps.push(self.lock_entry(dep, &index)?);
+                locked.deps.push(self.lock_entry(dep, &index, &dirty)?);
             }
             for out in &stage.outs {
-                locked.outs.push(self.lock_entry(&out.path, &index)?);
+                locked
+                    .outs
+                    .push(self.lock_entry(&out.path, &index, &dirty)?);
             }
             // Plots ride in the metrics group: the lock has no group of their
             // own, and every reader looks a path up across all of them.
@@ -243,7 +277,7 @@ impl Repo {
                 .map(|m| m.path.as_str())
                 .chain(plot_paths)
             {
-                locked.metrics.push(self.lock_entry(path, &index)?);
+                locked.metrics.push(self.lock_entry(path, &index, &dirty)?);
             }
 
             self.lock.stages.insert(name.clone(), locked);

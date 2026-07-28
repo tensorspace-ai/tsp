@@ -302,6 +302,23 @@ impl Git {
         self.run(["lfs", "track", "--", pattern]).map(|_| ())
     }
 
+    /// The object id the working-tree file at `path` would have once staged.
+    ///
+    /// `--path` makes git apply the same filters the path is configured for, so
+    /// an LFS-tracked file hashes to its pointer rather than to its contents —
+    /// which is what git will actually store, and therefore what a lock entry
+    /// has to record.
+    pub fn hash_working_file(&self, path: &str) -> Result<String> {
+        let out = self.run([
+            OsStr::new("hash-object"),
+            OsStr::new("--path"),
+            OsStr::new(path),
+            OsStr::new("--"),
+            self.work_tree.join(path).as_os_str(),
+        ])?;
+        Ok(trimmed(&out.stdout))
+    }
+
     /// Stages the given paths, additions and deletions alike.
     pub fn stage_paths(&self, paths: &[String]) -> Result<()> {
         if paths.is_empty() {

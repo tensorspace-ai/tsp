@@ -255,6 +255,29 @@ fn the_lock_takes_its_digest_from_the_pointer() {
     assert!(lock.contains(&oid), "lock should record {oid}:\n{lock}");
 }
 
+/// The flow this has to survive: edit a script, reproduce, commit. The lock
+/// records what the run consumed, so committing that same content must not
+/// leave the stage reading stale.
+#[test]
+fn a_stage_stays_current_after_committing_the_edit_that_ran_it() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    // Edited but not staged, which is exactly how a script is when ds runs it.
+    f.write_exec("scripts/train.sh", &format!("{TRAIN}# tweaked\n"));
+    f.ds_ok(&["repro"]);
+
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-qm", "retune"]);
+
+    let out = f.ds_ok(&["status"]);
+    assert!(
+        out.contains("0 need running"),
+        "the committed run should be current:\n{out}"
+    );
+}
+
 #[test]
 fn repro_is_a_noop_once_everything_is_current() {
     let f = Fixture::new();
