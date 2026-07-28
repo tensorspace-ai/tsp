@@ -255,6 +255,30 @@ fn the_lock_takes_its_digest_from_the_pointer() {
     assert!(lock.contains(&oid), "lock should record {oid}:\n{lock}");
 }
 
+/// A stage is current the moment it has been reproduced, before anything is
+/// committed. This is the state git cannot describe on its own — the content a
+/// run consumed is not in any commit yet — and it is why the lock exists.
+#[test]
+fn a_stage_is_current_as_soon_as_it_has_run() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    f.write_exec("scripts/train.sh", &format!("{TRAIN}# tweaked\n"));
+    assert!(
+        f.ds_ok(&["status"]).contains("scripts/train.sh changed"),
+        "the edit should register before it is run"
+    );
+
+    f.ds_ok(&["repro"]);
+
+    let out = f.ds_ok(&["status"]);
+    assert!(
+        out.contains("0 need running"),
+        "nothing is committed yet, but the run happened:\n{out}"
+    );
+}
+
 /// The flow this has to survive: edit a script, reproduce, commit. The lock
 /// records what the run consumed, so committing that same content must not
 /// leave the stage reading stale.

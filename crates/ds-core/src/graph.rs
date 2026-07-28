@@ -145,13 +145,13 @@ pub fn producers(pipeline: &Pipeline) -> HashMap<&str, &str> {
 
 /// What the working tree currently says, for deciding staleness against a lock.
 pub struct Resolver<'a> {
-    /// A path's current git object id, or `None` when it is not in the index.
+    /// The git object id a path's *current* content would have — the working
+    /// tree's, not the index's. A run locks the content it consumed, which for
+    /// an edited script is not yet staged, so comparing index ids would call a
+    /// stage stale the moment it had been reproduced.
     pub git_sha_of: &'a dyn Fn(&str) -> Option<String>,
     /// A parameter's current value, by file and dotted key.
     pub param_of: &'a dyn Fn(&str, &str) -> Option<serde_json::Value>,
-    /// Paths the working tree has changed since they were staged. git has
-    /// already made this comparison, so asking it is cheaper than hashing.
-    pub dirty: &'a HashSet<String>,
 }
 
 /// Decides whether a stage's recorded result still applies.
@@ -195,9 +195,6 @@ pub fn status_of(pipeline: &Pipeline, lock: &Lock, stage_name: &str, now: &Resol
         let Some(entry) = locked.entry(dep) else {
             return Status::Stale(format!("new dependency {dep}"));
         };
-        if now.dirty.contains(dep) {
-            return Status::Stale(format!("{dep} changed"));
-        }
         let Some(recorded) = entry.git_sha.as_deref() else {
             continue; // DVC-written lock: no git id to compare
         };
@@ -304,7 +301,6 @@ stages:
     struct Now {
         shas: HashMap<String, String>,
         params: HashMap<(String, String), serde_json::Value>,
-        dirty: HashSet<String>,
     }
 
     impl Now {
@@ -315,7 +311,6 @@ stages:
                     .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                     .collect(),
                 params: HashMap::new(),
-                dirty: HashSet::new(),
             }
         }
 
@@ -331,7 +326,6 @@ stages:
                 &Resolver {
                     git_sha_of: &git_sha_of,
                     param_of: &param_of,
-                    dirty: &self.dirty,
                 },
             )
         }
@@ -352,16 +346,21 @@ stages:
         );
     }
 
-    /// An edit that is not staged yet still makes the stage stale; git already
-    /// knows the file differs, so the lock's id alone would say "current".
+    /// Staleness is decided on the id of the content as it stands now, so an
+    /// edit that has not been staged still registers — and, just as important,
+    /// an edit a run already consumed does not.
     #[test]
-    fn an_unstaged_edit_is_stale() {
-        let mut now = Now::with_shas(&[("train.csv", "aaa")]);
-        now.dirty.insert("train.csv".to_owned());
+    fn an_unstaged_edit_is_judged_on_its_content() {
+        let edited = Now::with_shas(&[("train.csv", "bbb")]);
         assert_eq!(
-            now.status(&locked_chain()),
+            edited.status(&locked_chain()),
             Status::Stale("train.csv changed".to_owned())
         );
+
+        // The lock records what the run read, which for an unstaged edit is the
+        // working tree's content rather than the index's.
+        let just_ran = Now::with_shas(&[("train.csv", "aaa")]);
+        assert_eq!(just_ran.status(&locked_chain()), Status::Current);
     }
 
     #[test]
@@ -416,7 +415,6 @@ stages:
 
         let shas = HashMap::from([("train.csv".to_owned(), "aaa".to_owned())]);
         let git_sha_of = |path: &str| shas.get(path).cloned();
-        let dirty = HashSet::new();
 
         let unchanged = |_: &str, _: &str| Some(serde_json::json!(4));
         assert_eq!(
@@ -426,8 +424,7 @@ stages:
                 "train",
                 &Resolver {
                     git_sha_of: &git_sha_of,
-                    param_of: &unchanged,
-                    dirty: &dirty
+                    param_of: &unchanged
                 }
             ),
             Status::Current
@@ -441,8 +438,7 @@ stages:
                 "train",
                 &Resolver {
                     git_sha_of: &git_sha_of,
-                    param_of: &changed,
-                    dirty: &dirty
+                    param_of: &changed
                 }
             ),
             Status::Stale("parameter train.max_depth changed".to_owned())

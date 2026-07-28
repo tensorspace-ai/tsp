@@ -79,12 +79,13 @@ impl Repo {
         let dirty = self.git.dirty_paths()?;
         let params = self.param_cache()?;
 
-        let git_sha_of = |path: &str| index.get(path).cloned();
+        // The same identity the lock records: what the content *is*, which for
+        // an unstaged edit means hashing it rather than trusting the index.
+        let git_sha_of = |path: &str| self.blob_id(path, &index, &dirty).ok().flatten();
         let param_of = |file: &str, key: &str| params.get(file).and_then(|p| p.get(key)).cloned();
         let now = Resolver {
             git_sha_of: &git_sha_of,
             param_of: &param_of,
-            dirty: &dirty,
         };
 
         Ok(self
