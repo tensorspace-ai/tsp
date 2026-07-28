@@ -176,7 +176,7 @@ fn track(cwd: &std::path::Path, paths: &[PathBuf]) -> Result<()> {
     if skipped > 0 {
         println!("{skipped} empty file(s) staged as-is (git-lfs does not point at empty files)");
     }
-    println!("Next: `git commit` to record the pointers, then `ds push` to upload the data.");
+    println!("Next: `git commit` to record the pointers; `git push` uploads the data.");
     Ok(())
 }
 
