@@ -167,6 +167,43 @@ fn init_configures_lfs_and_the_guard_hook() {
     assert!(f.root.join(".git/hooks/pre-push").exists());
 }
 
+/// A repository set up by an older ds carries a pre-push hook running a command
+/// that no longer exists, and it occupies the slot `git lfs install` needs.
+#[test]
+fn init_clears_the_pre_push_hook_an_older_ds_left() {
+    let f = Fixture::new();
+    f.write(
+        ".git/hooks/pre-push",
+        "#!/bin/sh\n# ds-push: upload tracked data\nexec ds push --remote \"$1\"\n",
+    );
+
+    let out = f.ds_ok(&["init"]);
+    assert!(out.contains("obsolete"), "{out}");
+
+    let hook = std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap();
+    assert!(
+        hook.contains("git lfs"),
+        "git-lfs should own it now:\n{hook}"
+    );
+}
+
+/// A hook the user wrote is not ours to remove.
+#[test]
+fn init_leaves_a_foreign_pre_push_hook_alone() {
+    let f = Fixture::new();
+    std::fs::remove_file(f.root.join(".git/hooks/pre-push")).unwrap();
+    f.write(".git/hooks/pre-push", "#!/bin/sh\necho mine\n");
+
+    // git-lfs refuses to overwrite it too, so init surfaces that rather than
+    // pretending the repository is ready.
+    let out = f.ds(&["init"]);
+    assert!(!out.status.success());
+    assert_eq!(
+        std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap(),
+        "#!/bin/sh\necho mine\n"
+    );
+}
+
 /// The whole premise: data reaches git as a pointer without ds touching it.
 #[test]
 fn data_becomes_a_pointer_through_the_lfs_filter_alone() {

@@ -116,6 +116,7 @@ fn main() -> Result<()> {
 fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
     let git = Git::discover(cwd).context("not inside a git repository")?;
 
+    remove_obsolete_push_hook(&git)?;
     git.lfs_install()
         .context("running `git lfs install` — is git-lfs installed?")?;
     println!("Configured Git LFS in {}", git.work_tree().display());
@@ -133,6 +134,26 @@ fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
         println!("  git lfs track \"data/**\" \"models/**\"");
     }
     println!("\nDescribe your stages in ds.yaml, then run `ds repro`.");
+    Ok(())
+}
+
+/// Clears the `pre-push` hook older versions of `ds` installed.
+///
+/// That hook ran `ds push`, a command that no longer exists, so leaving it in
+/// place would fail every push. It also occupies the slot `git lfs install`
+/// wants, which is what makes this a migration step rather than a nicety. Only
+/// a hook carrying our own marker is touched.
+fn remove_obsolete_push_hook(git: &Git) -> Result<()> {
+    let path = git.git_dir().join("hooks").join("pre-push");
+    let Ok(existing) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    if !existing.contains("ds-push") {
+        return Ok(());
+    }
+
+    std::fs::remove_file(&path)?;
+    println!("Removed the obsolete ds pre-push hook; git-lfs uploads data now.");
     Ok(())
 }
 
