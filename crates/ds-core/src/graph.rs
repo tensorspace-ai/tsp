@@ -26,7 +26,8 @@ pub enum Status {
     New,
     /// A dependency moved. The reason names which, so `ds status` can say why.
     Stale(String),
-    /// Staleness is not decidable — a DVC-written lock records no git ids.
+    /// Staleness is not decidable, because a dependency's path never resolved
+    /// to something that could be looked up.
     Unknown(String),
 }
 
@@ -192,16 +193,13 @@ pub fn status_of(pipeline: &Pipeline, lock: &Lock, stage_name: &str, now: &Resol
         if dep.contains("${") {
             continue;
         }
-        let Some(entry) = locked.entry(dep) else {
+        let Some(recorded) = locked.deps.get(dep) else {
             return Status::Stale(format!("new dependency {dep}"));
-        };
-        let Some(recorded) = entry.git_sha.as_deref() else {
-            continue; // DVC-written lock: no git id to compare
         };
         comparable += 1;
         match (now.git_sha_of)(dep) {
             None => return Status::Stale(format!("missing dependency {dep}")),
-            Some(current) if current != recorded => {
+            Some(current) if &current != recorded => {
                 return Status::Stale(format!("{dep} changed"));
             }
             Some(_) => {}
@@ -209,7 +207,7 @@ pub fn status_of(pipeline: &Pipeline, lock: &Lock, stage_name: &str, now: &Resol
     }
 
     if comparable == 0 && !stage.deps.is_empty() {
-        return Status::Unknown("lock file records no git ids".to_owned());
+        return Status::Unknown("every dependency is an unresolved reference".to_owned());
     }
     Status::Current
 }
@@ -217,7 +215,7 @@ pub fn status_of(pipeline: &Pipeline, lock: &Lock, stage_name: &str, now: &Resol
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lock::{LockEntry, LockStage};
+    use crate::lock::LockStage;
     use indexmap::IndexMap;
 
     fn pipeline(text: &str) -> Pipeline {
@@ -285,11 +283,7 @@ stages:
             "train".to_owned(),
             LockStage {
                 cmd: "t".to_owned(),
-                deps: vec![LockEntry {
-                    path: "train.csv".to_owned(),
-                    git_sha: Some("aaa".to_owned()),
-                    ..Default::default()
-                }],
+                deps: IndexMap::from([("train.csv".to_owned(), "aaa".to_owned())]),
                 ..Default::default()
             },
         );
@@ -389,16 +383,6 @@ stages:
             now.status(&locked_chain()),
             Status::Stale("missing dependency train.csv".to_owned())
         );
-    }
-
-    /// A DVC lock records content hashes and no git ids, so nothing here can
-    /// decide staleness without hashing the data.
-    #[test]
-    fn a_lock_without_git_ids_reports_unknown() {
-        let mut lock = locked_chain();
-        lock.stages.get_mut("train").unwrap().deps[0].git_sha = None;
-        let now = Now::with_shas(&[("train.csv", "aaa")]);
-        assert!(matches!(now.status(&lock), Status::Unknown(_)));
     }
 
     /// The case an experiment turns on: same code, same data, different value.

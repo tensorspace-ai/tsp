@@ -26,7 +26,7 @@ pub mod plots;
 pub mod pointer;
 pub mod svg;
 
-pub use lock::{Lock, LockEntry, LockStage};
+pub use lock::{Lock, LockStage};
 pub use oid::Oid;
 pub use pipeline::{Pipeline, Stage};
 pub use pointer::Pointer;

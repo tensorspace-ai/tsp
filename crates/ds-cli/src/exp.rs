@@ -165,7 +165,7 @@ pub fn apply(repo: &Repo, experiment: &Experiment) -> Result<Vec<String>> {
         paths.extend(stage.out_paths().into_iter().map(str::to_owned));
         paths.extend(stage.params.iter().map(|p| p.file.clone()));
     }
-    paths.push(ds_core::lock::Lock::name_for(&repo.pipeline_file).to_owned());
+    paths.push(ds_core::lock::FILE_NAME.to_owned());
     paths.sort();
     paths.dedup();
 

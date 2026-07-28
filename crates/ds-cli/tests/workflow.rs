@@ -229,30 +229,41 @@ fn repro_runs_stages_in_dependency_order_and_writes_the_lock() {
     assert_eq!(f.metrics()["accuracy"], 12);
 
     let lock = f.read("ds.lock");
+    assert!(lock.contains("schema: 3"), "{lock}");
+    assert!(lock.contains("prepare"), "{lock}");
+    // A dependency is one line: the path, and the id of what it held.
+    let expected = f.git(&["hash-object", "scripts/prepare.sh"]);
     assert!(
-        lock.contains("schema: '2.0'") || lock.contains("schema: \"2.0\""),
+        lock.contains(&format!("scripts/prepare.sh: {}", expected.trim())),
         "{lock}"
     );
-    assert!(lock.contains("prepare"), "{lock}");
-    assert!(lock.contains("git_sha"), "{lock}");
 }
 
-/// The lock's digest for an LFS path is the pointer's oid, which is what makes
-/// locking a large output cost nothing.
+/// An LFS-tracked dependency is recorded by its *pointer's* object id, never by
+/// hashing the data behind it — which is what makes locking a large input cost
+/// a blob read rather than a pass over gigabytes.
 #[test]
-fn the_lock_takes_its_digest_from_the_pointer() {
+fn an_lfs_dependency_is_locked_by_its_pointer_id() {
     let f = Fixture::new();
     f.ds_ok(&["repro"]);
 
-    let pointer = f.git(&["cat-file", "-p", ":data/prepared.txt"]);
-    let oid = pointer
-        .lines()
-        .find_map(|l| l.strip_prefix("oid sha256:"))
-        .expect("prepared.txt should be an LFS pointer")
-        .to_owned();
+    let pointer_id = f.git(&["rev-parse", ":data/prepared.txt"]);
+    let pointer_id = pointer_id.trim();
+    // --no-filters is what makes this the hash of the bytes themselves; without
+    // it git applies the path's clean filter and hands back the pointer id.
+    let content_hash = f.git(&["hash-object", "--no-filters", "data/prepared.txt"]);
+    let content_hash = content_hash.trim();
+    assert_ne!(pointer_id, content_hash, "the fixture must be LFS-tracked");
 
     let lock = f.read("ds.lock");
-    assert!(lock.contains(&oid), "lock should record {oid}:\n{lock}");
+    assert!(
+        lock.contains(&format!("data/prepared.txt: {pointer_id}")),
+        "expected the pointer id {pointer_id}:\n{lock}"
+    );
+    assert!(
+        !lock.contains(content_hash),
+        "the data itself is not hashed"
+    );
 }
 
 /// A stage is current the moment it has been reproduced, before anything is

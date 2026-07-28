@@ -11,10 +11,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use ds_core::git::Git;
 use ds_core::graph::{self, Resolver, Status};
-use ds_core::lock::{Lock, LockEntry, LockStage};
+use ds_core::lock::{Lock, LockStage};
 use ds_core::params::Params;
 use ds_core::pipeline::Pipeline;
-use ds_core::{Pointer, hash};
 
 pub struct Repo {
     git: Git,
@@ -37,7 +36,31 @@ impl Repo {
                 root.display()
             );
         };
-        let lock = Lock::read_or_default(&root, &pipeline_file)?;
+        // A lock this version cannot read is not a failure to recover from by
+        // hand: it only records what the last run saw, so discarding it costs a
+        // rerun and nothing else. Failing here would leave no way forward,
+        // since every command reads the lock before it can rewrite one.
+        let lock = match Lock::read_or_default(&root) {
+            Ok(lock) if lock.schema == ds_core::lock::SCHEMA => lock,
+            Ok(lock) => {
+                eprintln!(
+                    "warning: {} is schema {} and this ds writes {}; \
+                     treating every stage as new until the next `ds repro`",
+                    ds_core::lock::FILE_NAME,
+                    lock.schema,
+                    ds_core::lock::SCHEMA
+                );
+                Lock::default()
+            }
+            Err(err) => {
+                eprintln!(
+                    "warning: cannot read {}: {err}; \
+                     treating every stage as new until the next `ds repro`",
+                    ds_core::lock::FILE_NAME
+                );
+                Lock::default()
+            }
+        };
 
         Ok(Self {
             git,
@@ -57,7 +80,7 @@ impl Repo {
     }
 
     pub fn lock_path(&self) -> PathBuf {
-        self.root.join(Lock::name_for(&self.pipeline_file))
+        self.root.join(ds_core::lock::FILE_NAME)
     }
 
     /// Stages in dependency order, restricted to `target` and its ancestors
@@ -123,52 +146,6 @@ impl Repo {
             .collect())
     }
 
-    /// Builds the lock entry for one path.
-    ///
-    /// The digest of an LFS-tracked file is read out of its pointer rather than
-    /// computed: the pointer *is* the sha256 of the content, so locking a
-    /// multi-gigabyte output costs a blob read instead of a full pass over the
-    /// data. Only small files that git stores literally are hashed.
-    pub fn lock_entry(
-        &self,
-        path: &str,
-        index: &HashMap<String, String>,
-        dirty: &HashSet<String>,
-    ) -> Result<LockEntry> {
-        let absolute = self.root.join(path);
-        let mut entry = LockEntry {
-            path: path.to_owned(),
-            hash: Some("sha256".to_owned()),
-            git_sha: self.blob_id(path, index, dirty)?,
-            ..Default::default()
-        };
-
-        if absolute.is_dir() {
-            let (digest, size, nfiles) = self.directory_digest(path, index, dirty)?;
-            entry.sha256 = Some(digest);
-            entry.size = Some(size);
-            entry.nfiles = Some(nfiles);
-            return Ok(entry);
-        }
-        if !absolute.is_file() {
-            return Ok(entry);
-        }
-
-        match self.pointer_for(path, index)? {
-            Some(pointer) => {
-                entry.sha256 = Some(pointer.oid.as_str().to_owned());
-                entry.size = Some(pointer.size);
-            }
-            None => {
-                let hashed =
-                    hash::hash_file(&absolute).with_context(|| format!("hashing {path}"))?;
-                entry.sha256 = Some(hashed.oid.as_str().to_owned());
-                entry.size = Some(hashed.size);
-            }
-        }
-        Ok(entry)
-    }
-
     /// The object id this path will carry once committed.
     ///
     /// The index is the cheap answer and the right one for anything already
@@ -192,44 +169,6 @@ impl Repo {
             return Ok(index.get(path).cloned());
         }
         Ok(Some(self.git.hash_working_file(path)?))
-    }
-
-    /// The LFS pointer git holds for `path`, if it holds one.
-    fn pointer_for(&self, path: &str, index: &HashMap<String, String>) -> Result<Option<Pointer>> {
-        let Some(sha) = index.get(path) else {
-            return Ok(None);
-        };
-        let blobs = self.git.read_blobs(std::slice::from_ref(sha))?;
-        let Some((_, content)) = blobs.first() else {
-            return Ok(None);
-        };
-        if !Pointer::could_be_pointer(content.len() as u64) {
-            return Ok(None);
-        }
-        Ok(Pointer::try_from(content.as_slice()).ok())
-    }
-
-    /// Summarises a directory from the index rather than the filesystem, so
-    /// ignored and untracked files cannot change the recorded identity.
-    fn directory_digest(
-        &self,
-        path: &str,
-        index: &HashMap<String, String>,
-        dirty: &HashSet<String>,
-    ) -> Result<(String, u64, usize)> {
-        let prefix = format!("{}/", path.trim_end_matches('/'));
-        let mut members: Vec<&String> = index.keys().filter(|p| p.starts_with(&prefix)).collect();
-        members.sort();
-
-        let mut digests = Vec::with_capacity(members.len());
-        let mut total = 0u64;
-        for member in &members {
-            let entry = self.lock_entry(member, index, dirty)?;
-            digests.push(((*member).clone(), entry.sha256.clone().unwrap_or_default()));
-            total += entry.size.unwrap_or(0);
-        }
-
-        Ok((hash::digest_of_members(&digests), total, members.len()))
     }
 
     /// Rebuilds the lock entry for every stage in `names`, leaving other stages
@@ -262,23 +201,9 @@ impl Repo {
             }
 
             for dep in stage.deps.iter() {
-                locked.deps.push(self.lock_entry(dep, &index, &dirty)?);
-            }
-            for out in &stage.outs {
-                locked
-                    .outs
-                    .push(self.lock_entry(&out.path, &index, &dirty)?);
-            }
-            // Plots ride in the metrics group: the lock has no group of their
-            // own, and every reader looks a path up across all of them.
-            let plot_paths = stage.plots.iter().map(|p| p.artifact.path.as_str());
-            for path in stage
-                .metrics
-                .iter()
-                .map(|m| m.path.as_str())
-                .chain(plot_paths)
-            {
-                locked.metrics.push(self.lock_entry(path, &index, &dirty)?);
+                if let Some(id) = self.blob_id(dep, &index, &dirty)? {
+                    locked.deps.insert(dep.clone(), id);
+                }
             }
 
             self.lock.stages.insert(name.clone(), locked);
@@ -303,7 +228,7 @@ impl Repo {
             paths.extend(stage.out_paths().into_iter().map(str::to_owned));
             paths.extend(stage.params.iter().map(|p| p.file.clone()));
         }
-        paths.push(Lock::name_for(&self.pipeline_file).to_owned());
+        paths.push(ds_core::lock::FILE_NAME.to_owned());
         paths.sort();
         paths.dedup();
 
