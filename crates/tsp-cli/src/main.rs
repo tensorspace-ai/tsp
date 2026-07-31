@@ -127,7 +127,6 @@ fn main() -> Result<()> {
 fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
     let git = Git::discover(cwd).context("not inside a git repository")?;
 
-    remove_obsolete_push_hook(&git)?;
     git.lfs_install()
         .context("running `git lfs install` — is git-lfs installed?")?;
     println!("Configured Git LFS in {}", git.work_tree().display());
@@ -144,27 +143,7 @@ fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
         println!("\nTell Git LFS what counts as data, e.g.:");
         println!("  git lfs track \"data/**\" \"models/**\"");
     }
-    println!("\nDescribe your stages in ds.yaml, then run `tsp repro`.");
-    Ok(())
-}
-
-/// Clears the `pre-push` hook older versions of `tsp` installed.
-///
-/// That hook ran `tsp push`, a command that no longer exists, so leaving it in
-/// place would fail every push. It also occupies the slot `git lfs install`
-/// wants, which is what makes this a migration step rather than a nicety. Only
-/// a hook carrying our own marker is touched.
-fn remove_obsolete_push_hook(git: &Git) -> Result<()> {
-    let path = git.git_dir().join("hooks").join("pre-push");
-    let Ok(existing) = std::fs::read_to_string(&path) else {
-        return Ok(());
-    };
-    if !existing.contains("ds-push") {
-        return Ok(());
-    }
-
-    std::fs::remove_file(&path)?;
-    println!("Removed the obsolete tsp pre-push hook; git-lfs uploads data now.");
+    println!("\nDescribe your stages in tsp.yaml, then run `tsp repro`.");
     Ok(())
 }
 
@@ -184,7 +163,7 @@ fn install_guard_hook(git: &Git) -> Result<()> {
         // Both markers count as ours: a repository set up before the rename
         // has a working guard hook, and warning about it would send the reader
         // to fix something that is not broken.
-        if !existing.contains("tsp-guard") && !existing.contains("ds-guard") {
+        if !existing.contains("tsp-guard") {
             eprintln!(
                 "warning: {} already exists and was left alone; \
                  large-file protection is not installed",
@@ -235,7 +214,7 @@ fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> 
     println!(
         "\nRan {} stage(s); {} updated and staged.",
         ran.len(),
-        repo.lock_name()
+        tsp_core::lock::FILE_NAME
     );
     println!("Commit the result with `git commit`; `git push` uploads the data.");
     Ok(())

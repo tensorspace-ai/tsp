@@ -107,13 +107,6 @@ this one.
 `tsp.lock` is not `dvc.lock`. It is schema 3 and records object ids rather than
 content hashes, which is what makes the staleness check cheap.
 
-## File names
-
-A repository written today uses `tsp.yaml` and `tsp.lock`. The tool used to be
-called `ds`, and `ds.yaml`, `ds.lock` and `refs/ds/exps/` are read forever — a
-rename is this tool's problem, not the problem of anyone who already committed a
-pipeline. A repository that already has a lock keeps it where it is.
-
 ## Building
 
 ```sh

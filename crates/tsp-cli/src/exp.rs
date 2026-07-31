@@ -20,27 +20,14 @@ use crate::run;
 /// branches, and outside `refs/tags/` so they are not pushed by default.
 pub const REF_PREFIX: &str = "refs/tsp/exps";
 
-/// Where they lived before the tool was renamed.
-///
-/// These are commits, not a cache: an experiment recorded under the old prefix
-/// is somebody's result and stays listable and applicable forever. New ones are
-/// written under the new prefix, and nothing rewrites the old.
-pub const LEGACY_REF_PREFIX: &str = "refs/ds/exps";
-
-const REF_PREFIXES: [&str; 2] = [REF_PREFIX, LEGACY_REF_PREFIX];
-
 pub struct Experiment {
     pub name: String,
     pub commit: String,
-    /// The namespace this one actually lives in. Carried rather than assumed so
-    /// that removing or applying an experiment recorded before the rename acts
-    /// on the ref that exists instead of the one we would write today.
-    pub prefix: &'static str,
 }
 
 impl Experiment {
     pub fn ref_name(&self) -> String {
-        format!("{}/{}", self.prefix, self.name)
+        format!("{REF_PREFIX}/{}", self.name)
     }
 }
 
@@ -96,11 +83,7 @@ fn record(
         Some(given) => validate_name(given)?.to_owned(),
         None => format!("exp-{}", &commit[..7]),
     };
-    let experiment = Experiment {
-        name,
-        commit,
-        prefix: REF_PREFIX,
-    };
+    let experiment = Experiment { name, commit };
     repo.git()
         .update_ref(&experiment.ref_name(), &experiment.commit)?;
     Ok(experiment)
@@ -140,24 +123,18 @@ fn validate_name(name: &str) -> Result<&str> {
 }
 
 pub fn list(repo: &Repo) -> Result<Vec<Experiment>> {
-    let mut found = Vec::new();
-    for prefix in REF_PREFIXES {
-        for (name, commit) in repo.git().refs_under(prefix)? {
-            if let Some(short) = name.strip_prefix(&format!("{prefix}/")) {
-                // A name recorded under both prefixes is one experiment, and
-                // the current namespace is the one that describes it.
-                if found.iter().any(|e: &Experiment| e.name == short) {
-                    continue;
-                }
-                found.push(Experiment {
+    Ok(repo
+        .git()
+        .refs_under(REF_PREFIX)?
+        .into_iter()
+        .filter_map(|(name, commit)| {
+            name.strip_prefix(&format!("{REF_PREFIX}/"))
+                .map(|short| Experiment {
                     name: short.to_owned(),
                     commit,
-                    prefix,
-                });
-            }
-        }
-    }
-    Ok(found)
+                })
+        })
+        .collect())
 }
 
 pub fn find(repo: &Repo, name: &str) -> Result<Experiment> {
@@ -188,7 +165,7 @@ pub fn apply(repo: &Repo, experiment: &Experiment) -> Result<Vec<String>> {
         paths.extend(stage.out_paths().into_iter().map(str::to_owned));
         paths.extend(stage.params.iter().map(|p| p.file.clone()));
     }
-    paths.push(repo.lock_name().to_owned());
+    paths.push(tsp_core::lock::FILE_NAME.to_owned());
     paths.sort();
     paths.dedup();
 
@@ -247,20 +224,7 @@ mod tests {
         let experiment = Experiment {
             name: "exp-abc1234".to_owned(),
             commit: "abc".to_owned(),
-            prefix: REF_PREFIX,
         };
         assert_eq!(experiment.ref_name(), "refs/tsp/exps/exp-abc1234");
-    }
-
-    /// An experiment recorded before the rename is somebody's result, so it
-    /// stays addressable at the ref it was actually written to.
-    #[test]
-    fn a_legacy_experiment_keeps_its_own_ref() {
-        let experiment = Experiment {
-            name: "depth-12".to_owned(),
-            commit: "abc".to_owned(),
-            prefix: LEGACY_REF_PREFIX,
-        };
-        assert_eq!(experiment.ref_name(), "refs/ds/exps/depth-12");
     }
 }

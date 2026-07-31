@@ -44,11 +44,9 @@ type Result<T> = std::result::Result<T, PipelineError>;
 
 /// Candidate file names, in the order they are looked for.
 ///
-/// `tsp.yaml` is what a new repository should use. The other two are read
-/// forever: `ds.yaml` is what this tool called its own pipeline before it was
-/// renamed, and `dvc.yaml` is the same shape written by DVC. Renaming a tool is
-/// not a reason to stop reading files people already committed.
-pub const FILE_NAMES: [&str; 3] = ["tsp.yaml", "ds.yaml", "dvc.yaml"];
+/// `dvc.yaml` is the same shape written by DVC, and reading it is how an
+/// existing DVC repository renders without being migrated first.
+pub const FILE_NAMES: [&str; 2] = ["tsp.yaml", "dvc.yaml"];
 
 /// The pipeline shape this version understands.
 ///

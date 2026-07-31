@@ -30,9 +30,8 @@ why. Do not delete, skip or weaken a test to make a change pass.
   file; one stage's retune must not stale its siblings.
 - **This tool does not move bytes.** No cache, no remote, no transfer command.
   Git LFS does that job for every git client rather than only for this one.
-- **Old names are read forever.** `ds.yaml`, `dvc.yaml`, `ds.lock` and
-  `refs/ds/exps/` are files and refs people already committed. A rename is this
-  tool's problem, not theirs.
+- **`dvc.yaml` is read as-is.** That is how an existing DVC repository renders
+  without being migrated first, and it is a feature rather than a legacy.
 - **A file from a newer schema is refused whole**, never parsed for the parts we
   recognise. That is what makes adding a field safe for older versions.
 

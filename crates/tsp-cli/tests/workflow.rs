@@ -167,48 +167,6 @@ fn init_configures_lfs_and_the_guard_hook() {
     assert!(f.root.join(".git/hooks/pre-push").exists());
 }
 
-/// A repository set up by an older version carries a pre-push hook running a
-/// command that no longer exists, and it occupies the slot `git lfs install`
-/// needs.
-#[test]
-fn init_clears_the_pre_push_hook_an_older_version_left() {
-    let f = Fixture::new();
-    f.write(
-        ".git/hooks/pre-push",
-        "#!/bin/sh\n# ds-push: upload tracked data\nexec tsp push --remote \"$1\"\n",
-    );
-
-    let out = f.tsp_ok(&["init"]);
-    assert!(out.contains("obsolete"), "{out}");
-
-    let hook = std::fs::read_to_string(f.root.join(".git/hooks/pre-push")).unwrap();
-    assert!(
-        hook.contains("git lfs"),
-        "git-lfs should own it now:\n{hook}"
-    );
-}
-
-/// A guard hook installed before the rename is still ours, and still working.
-/// Warning about it would send the reader to fix something that is not broken.
-#[test]
-fn init_leaves_a_pre_rename_guard_hook_alone() {
-    let f = Fixture::new();
-    let path = f.root.join(".git/hooks/pre-commit");
-    std::fs::write(
-        &path,
-        "#!/bin/sh\n# ds-guard: refuse a large blob\nexit 0\n",
-    )
-    .unwrap();
-
-    let out = f.tsp(&["init"]);
-    assert!(out.status.success());
-    assert!(
-        !String::from_utf8_lossy(&out.stderr).contains("left alone"),
-        "a hook we installed should not be reported as a foreign one"
-    );
-    assert!(std::fs::read_to_string(&path).unwrap().contains("ds-guard"));
-}
-
 /// A hook the user wrote is not ours to remove.
 #[test]
 fn init_leaves_a_foreign_pre_push_hook_alone() {
@@ -259,47 +217,6 @@ fn repro_runs_stages_in_dependency_order_and_writes_the_lock() {
         lock.contains(&format!("scripts/prepare.sh: {}", expected.trim())),
         "{lock}"
     );
-}
-
-/// A repository written before the rename keeps working, and keeps its names.
-///
-/// The tool was called `ds` and wrote `ds.yaml` and `ds.lock`. Those files are
-/// committed in real repositories, and a rename is our problem rather than
-/// theirs — so the old names are read forever, and the lock is rewritten where
-/// it already is instead of being moved. Moving it would show up in the next
-/// diff as a deletion and an addition, over a rename that changes nothing about
-/// what the file says.
-#[test]
-fn a_repository_written_before_the_rename_keeps_its_own_names() {
-    let f = Fixture::new();
-    std::fs::rename(f.root.join("tsp.yaml"), f.root.join("ds.yaml")).unwrap();
-    f.git(&["add", "-A"]);
-    f.git(&["commit", "-qm", "pipeline under the old name"]);
-
-    let out = f.tsp_ok(&["repro"]);
-    assert!(out.contains("==> prepare"), "{out}");
-
-    assert!(
-        f.root.join("ds.lock").is_file(),
-        "the lock lands beside the pipeline it belongs to"
-    );
-    assert!(!f.root.join("tsp.lock").exists(), "and nothing is moved");
-    assert!(f.read("ds.lock").contains("schema: 3"));
-
-    // And the second run reads what the first one wrote.
-    let again = f.tsp_ok(&["repro"]);
-    assert!(again.contains("up to date"), "{again}");
-}
-
-/// A new repository gets the new names.
-#[test]
-fn a_new_repository_writes_the_current_names() {
-    let f = Fixture::new();
-    assert!(f.root.join("tsp.yaml").is_file());
-
-    f.tsp_ok(&["repro"]);
-    assert!(f.root.join("tsp.lock").is_file());
-    assert!(!f.root.join("ds.lock").exists());
 }
 
 /// A lock from a future schema is discarded whole, never read field by field.

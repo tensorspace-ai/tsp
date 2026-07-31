@@ -46,7 +46,7 @@ impl Repo {
                 eprintln!(
                     "warning: {} is schema {} and this tsp writes {}; \
                      treating every stage as new until the next `tsp repro`",
-                    tsp_core::lock::file_name_in(&root),
+                    tsp_core::lock::FILE_NAME,
                     lock.schema,
                     tsp_core::lock::SCHEMA
                 );
@@ -56,7 +56,7 @@ impl Repo {
                 eprintln!(
                     "warning: cannot read {}: {err}; \
                      treating every stage as new until the next `tsp repro`",
-                    tsp_core::lock::file_name_in(&root)
+                    tsp_core::lock::FILE_NAME
                 );
                 Lock::default()
             }
@@ -79,13 +79,8 @@ impl Repo {
         &self.root
     }
 
-    /// The lock this repository uses, which is the one it already has.
-    pub fn lock_name(&self) -> &'static str {
-        tsp_core::lock::file_name_in(&self.root)
-    }
-
     pub fn lock_path(&self) -> PathBuf {
-        self.root.join(self.lock_name())
+        self.root.join(tsp_core::lock::FILE_NAME)
     }
 
     /// Stages in dependency order, restricted to `target` and its ancestors
@@ -233,7 +228,7 @@ impl Repo {
             paths.extend(stage.out_paths().into_iter().map(str::to_owned));
             paths.extend(stage.params.iter().map(|p| p.file.clone()));
         }
-        paths.push(self.lock_name().to_owned());
+        paths.push(tsp_core::lock::FILE_NAME.to_owned());
         paths.sort();
         paths.dedup();
 

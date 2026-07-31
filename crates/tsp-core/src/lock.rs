@@ -50,36 +50,9 @@ pub enum LockError {
 
 type Result<T> = std::result::Result<T, LockError>;
 
-/// Candidate lock file names, in the order they are looked for.
-///
-/// A `dvc.yaml` pipeline locks here too: the format is no longer DVC's, so
-/// writing `dvc.lock` would only mislead a reader.
-pub const FILE_NAMES: [&str; 2] = ["tsp.lock", "ds.lock"];
-
-/// Where a repository that has never been run writes its first lock.
-pub const FILE_NAME: &str = FILE_NAMES[0];
-
-/// The lock a repository already has, or where to write its first one.
-///
-/// A repository locked before the tool was renamed keeps its `ds.lock`: moving
-/// a file nobody asked to move would show up as a deletion and an addition in
-/// the next diff, over a rename that changes nothing about what the file says.
-///
-/// A repository that has never been locked takes its lock's name from its
-/// pipeline's, so the pair reads as a pair. A `dvc.yaml` is the exception and
-/// locks as `tsp.lock`, because the format is not DVC's and writing `dvc.lock`
-/// would tell a reader it was.
-pub fn file_name_in(root: &std::path::Path) -> &'static str {
-    for name in FILE_NAMES {
-        if root.join(name).is_file() {
-            return name;
-        }
-    }
-    if root.join("ds.yaml").is_file() && !root.join("tsp.yaml").is_file() {
-        return "ds.lock";
-    }
-    FILE_NAME
-}
+/// The one lock file name. A `dvc.yaml` pipeline locks here too: the format is
+/// not DVC's, so writing `dvc.lock` would only mislead a reader.
+pub const FILE_NAME: &str = "tsp.lock";
 
 /// Bumped whenever the shape changes, so a future reader can tell rather than
 /// guess. Version 3 is the first that is not DVC-compatible.
@@ -124,7 +97,7 @@ impl Lock {
 
     /// Reads the repository's lock, or a fresh one when it has never been run.
     pub fn read_or_default(root: &std::path::Path) -> Result<Self> {
-        let path = root.join(file_name_in(root));
+        let path = root.join(FILE_NAME);
         if path.is_file() {
             Self::read(&path)
         } else {

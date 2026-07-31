@@ -31,21 +31,12 @@ listed here, and never make an older file unreadable.
 - Cross-language conformance vectors in `tests/vectors.json`, covering both how
   the files parse and what verdict a stage's status reaches.
 
-### Changed
+### Deliberately absent
 
-- **The tool is called `tsp`.** It was `ds`, which was two letters, unsearchable
-  and already a command on plenty of systems.
+- **A data-management layer.** No cache directory, no remote, no transfer
+  command. `git push` and `git clone` move the bytes, and `git lfs prune` and
+  `git lfs fsck` maintain them — for every git client, not only for this one.
 
-  New repositories get `tsp.yaml`, `tsp.lock` and `refs/tsp/exps/`. Everything
-  written before the rename keeps working: `ds.yaml`, `dvc.yaml`, `ds.lock` and
-  `refs/ds/exps/` are read forever, a repository that already has a lock keeps
-  it where it is, and one that has never been locked takes its lock's name from
-  its pipeline's.
-
-- Data management belongs to Git LFS. There is no cache directory, no remote and
-  no transfer command; `git push` and `git clone` move the bytes, and
-  `git lfs prune` and `git lfs fsck` maintain them.
-
-- `tsp.lock` is schema 3 and records the git object id of each dependency rather
-  than a content hash, which is what makes a staleness check a tree lookup
-  instead of a pass over the data.
+- **Content hashing.** `tsp.lock` records the git object id of each dependency,
+  so deciding whether a stage is stale is a tree lookup rather than a pass over
+  the data it was built from.
