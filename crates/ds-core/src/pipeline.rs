@@ -5,6 +5,11 @@
 //! polymorphic spellings below (`cmd` as scalar or list, an out as a bare path
 //! or a single-key mapping) exist because DVC accepts them, so files in the
 //! wild use them.
+//!
+//! An optional `schema:` key states which shape the file is written in. It is
+//! absent from every pipeline that exists today, and from `dvc.yaml` entirely,
+//! so absence means 1 — but declaring it now is what lets a later change be
+//! rejected outright instead of silently parsing to a different DAG.
 
 use std::path::Path;
 
@@ -29,6 +34,10 @@ pub enum PipelineError {
     },
     #[error("stage {0:?} is not defined in the pipeline")]
     UnknownStage(String),
+    #[error(
+        "{path} is schema {found} and this ds understands {SCHEMA}; upgrade ds to read this pipeline"
+    )]
+    UnsupportedSchema { path: String, found: u32 },
 }
 
 type Result<T> = std::result::Result<T, PipelineError>;
@@ -36,14 +45,29 @@ type Result<T> = std::result::Result<T, PipelineError>;
 /// Candidate file names, in the order they are looked for.
 pub const FILE_NAMES: [&str; 2] = ["ds.yaml", "dvc.yaml"];
 
+/// The pipeline shape this version understands.
+///
+/// The field is optional and absence means 1, because every pipeline written
+/// before it existed is schema 1 and `dvc.yaml` has no such key at all. It is
+/// declared now, while there is only one shape, so that a later change is
+/// something a reader can *detect* rather than infer from a parse that half
+/// worked.
+pub const SCHEMA: u32 = 1;
+
+fn default_schema() -> u32 {
+    SCHEMA
+}
+
 /// A parsed pipeline.
 ///
 /// `stages` is an `IndexMap` rather than a `HashMap` because declaration order
 /// is the tie-breaker for stage ordering and for the rendered DAG. A map that
 /// reordered on every run would produce a different `ds.lock` from identical
 /// inputs.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Pipeline {
+    #[serde(default = "default_schema")]
+    pub schema: u32,
     #[serde(default)]
     pub stages: IndexMap<String, Stage>,
     /// Plots declared for the pipeline as a whole. Unlike a stage's own plots
@@ -51,6 +75,16 @@ pub struct Pipeline {
     /// data from several files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plots: TopPlots,
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self {
+            schema: SCHEMA,
+            stages: IndexMap::new(),
+            plots: TopPlots::default(),
+        }
+    }
 }
 
 /// One node of the pipeline.
@@ -95,10 +129,21 @@ impl Pipeline {
     }
 
     pub fn parse(text: &str, origin: &str) -> Result<Self> {
-        yaml_serde::from_str(text).map_err(|source| PipelineError::Parse {
+        let pipeline: Self = yaml_serde::from_str(text).map_err(|source| PipelineError::Parse {
             path: origin.to_owned(),
             source,
-        })
+        })?;
+        // Unlike the lock, which only records what the last run saw and can be
+        // thrown away for the cost of a rerun, the pipeline *is* the user's
+        // definition. A shape this version cannot read must stop the command
+        // rather than yield a DAG missing whatever the new schema added.
+        if pipeline.schema > SCHEMA {
+            return Err(PipelineError::UnsupportedSchema {
+                path: origin.to_owned(),
+                found: pipeline.schema,
+            });
+        }
+        Ok(pipeline)
     }
 
     pub fn stage(&self, name: &str) -> Result<&Stage> {
@@ -564,6 +609,39 @@ stages:
                 .unwrap()
                 .stages
                 .is_empty()
+        );
+    }
+
+    /// Every pipeline in existence predates the field, and `dvc.yaml` will
+    /// never carry it, so absence has to mean the shape we already read.
+    #[test]
+    fn a_pipeline_without_a_schema_is_schema_one() {
+        let p = Pipeline::parse("stages:\n  a:\n    cmd: x\n", "dvc.yaml").unwrap();
+        assert_eq!(p.schema, 1);
+    }
+
+    #[test]
+    fn the_current_schema_is_accepted_when_stated() {
+        let p = Pipeline::parse("schema: 1\nstages:\n  a:\n    cmd: x\n", "ds.yaml").unwrap();
+        assert_eq!(p.schema, 1);
+        assert_eq!(p.stages.len(), 1);
+    }
+
+    /// A pipeline is the user's definition, not a cache: reading a newer one
+    /// partially would run a DAG that is missing whatever the new schema added,
+    /// which is worse than refusing.
+    #[test]
+    fn a_newer_schema_is_refused_rather_than_read_partially() {
+        let err = Pipeline::parse("schema: 2\nstages:\n  a:\n    cmd: x\n", "ds.yaml").unwrap_err();
+
+        assert!(
+            matches!(err, PipelineError::UnsupportedSchema { found: 2, .. }),
+            "{err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("ds.yaml") && message.contains("schema 2"),
+            "{message}"
         );
     }
 }
