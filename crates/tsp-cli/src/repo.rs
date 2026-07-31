@@ -1,19 +1,19 @@
-//! The repository as `ds` sees it: a pipeline, a lock, and the git plumbing
+//! The repository as `tsp` sees it: a pipeline, a lock, and the git plumbing
 //! needed to answer questions about them.
 //!
 //! There is no data layer here. A dataset is whatever `.gitattributes` sends
-//! through the LFS filter; `ds` reads the pointer git already holds and never
+//! through the LFS filter; `tsp` reads the pointer git already holds and never
 //! touches the bytes.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use ds_core::git::Git;
-use ds_core::graph::{self, Resolver, Status};
-use ds_core::lock::{Lock, LockStage};
-use ds_core::params::Params;
-use ds_core::pipeline::Pipeline;
+use tsp_core::git::Git;
+use tsp_core::graph::{self, Resolver, Status};
+use tsp_core::lock::{Lock, LockStage};
+use tsp_core::params::Params;
+use tsp_core::pipeline::Pipeline;
 
 pub struct Repo {
     git: Git,
@@ -41,22 +41,22 @@ impl Repo {
         // rerun and nothing else. Failing here would leave no way forward,
         // since every command reads the lock before it can rewrite one.
         let lock = match Lock::read_or_default(&root) {
-            Ok(lock) if lock.schema == ds_core::lock::SCHEMA => lock,
+            Ok(lock) if lock.schema == tsp_core::lock::SCHEMA => lock,
             Ok(lock) => {
                 eprintln!(
-                    "warning: {} is schema {} and this ds writes {}; \
-                     treating every stage as new until the next `ds repro`",
-                    ds_core::lock::FILE_NAME,
+                    "warning: {} is schema {} and this tsp writes {}; \
+                     treating every stage as new until the next `tsp repro`",
+                    tsp_core::lock::file_name_in(&root),
                     lock.schema,
-                    ds_core::lock::SCHEMA
+                    tsp_core::lock::SCHEMA
                 );
                 Lock::default()
             }
             Err(err) => {
                 eprintln!(
                     "warning: cannot read {}: {err}; \
-                     treating every stage as new until the next `ds repro`",
-                    ds_core::lock::FILE_NAME
+                     treating every stage as new until the next `tsp repro`",
+                    tsp_core::lock::file_name_in(&root)
                 );
                 Lock::default()
             }
@@ -79,8 +79,13 @@ impl Repo {
         &self.root
     }
 
+    /// The lock this repository uses, which is the one it already has.
+    pub fn lock_name(&self) -> &'static str {
+        tsp_core::lock::file_name_in(&self.root)
+    }
+
     pub fn lock_path(&self) -> PathBuf {
-        self.root.join(ds_core::lock::FILE_NAME)
+        self.root.join(self.lock_name())
     }
 
     /// Stages in dependency order, restricted to `target` and its ancestors
@@ -228,7 +233,7 @@ impl Repo {
             paths.extend(stage.out_paths().into_iter().map(str::to_owned));
             paths.extend(stage.params.iter().map(|p| p.file.clone()));
         }
-        paths.push(ds_core::lock::FILE_NAME.to_owned());
+        paths.push(self.lock_name().to_owned());
         paths.sort();
         paths.dedup();
 

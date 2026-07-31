@@ -1,7 +1,7 @@
 //! Emit cross-language conformance vectors for the Go pipeline/lock parsers.
 //!
 //! `ds.yaml` and `ds.lock` have two implementations: this crate writes them,
-//! and Gitea's `modules/ds` reads them to draw the DAG. A disagreement between
+//! and Gitea's `modules/tsp` reads them to draw the DAG. A disagreement between
 //! the two does not crash anything — it renders a lineage graph that is quietly
 //! wrong, which is the worst failure this format has. So the cases below are
 //! generated with the Rust interpretation attached, and a Go test replays them
@@ -18,10 +18,10 @@
 //! Every value in the output is derived from the inputs, so regenerating on an
 //! unchanged tree produces a byte-identical file.
 
-use ds_core::graph::{self, Resolver};
-use ds_core::lock::Lock;
-use ds_core::pipeline::{Artifact, Pipeline, Stage};
 use serde_json::{Value, json};
+use tsp_core::graph::{self, Resolver};
+use tsp_core::lock::Lock;
+use tsp_core::pipeline::{Artifact, Pipeline, Stage};
 
 fn main() {
     let mut cases: Vec<Value> = Vec::new();
@@ -48,7 +48,7 @@ fn main() {
 
     for (name, input) in lock_cases() {
         cases.push(match Lock::parse(input, "ds.lock") {
-            Ok(lock) if lock.schema == ds_core::lock::SCHEMA => json!({
+            Ok(lock) if lock.schema == tsp_core::lock::SCHEMA => json!({
                 "name": name,
                 "kind": "lock",
                 "input": input,

@@ -1,6 +1,6 @@
 //! Git access, via plumbing subprocesses.
 //!
-//! `ds` shells out rather than linking a Rust git implementation. The deciding
+//! `tsp` shells out rather than linking a Rust git implementation. The deciding
 //! argument is interop: this inherits the user's credential helpers, `includeIf`
 //! conditional config, ssh setup, proxies and signing exactly as configured,
 //! which `gix`/`git2` each reimplement as a drifting subset. `git credential`
@@ -135,7 +135,7 @@ impl Git {
     /// Writes `content` into the object database as a blob, returning its sha.
     ///
     /// `--no-filters` is essential: it guarantees no clean filter rewrites the
-    /// bytes. `ds` never installs `filter=lfs`, but a user may have configured
+    /// bytes. `tsp` never installs `filter=lfs`, but a user may have configured
     /// one globally, and a filtered pointer blob would hash differently — which
     /// is exactly what makes Gitea's LFS garbage collector orphan the object.
     pub fn write_blob(&self, content: &[u8]) -> Result<String> {
@@ -192,7 +192,7 @@ impl Git {
     /// This is what lets the index hold a pointer blob while the working tree
     /// holds the real data. Without it git reports every tracked dataset file
     /// as modified, and `git commit -a` would replace the pointer with the raw
-    /// bytes. The bit is local to the index and is not committed, so `ds pull`
+    /// bytes. The bit is local to the index and is not committed, so `tsp pull`
     /// re-applies it after populating a fresh clone.
     pub fn set_skip_worktree(&self, path: &Path, skip: bool) -> Result<()> {
         let flag = if skip {
@@ -283,7 +283,7 @@ impl Git {
     /// Stages every change in the working tree, additions and deletions alike.
     ///
     /// This is where an LFS clean filter turns data into pointers, which is the
-    /// whole reason `ds` no longer writes pointer blobs itself.
+    /// whole reason `tsp` no longer writes pointer blobs itself.
     pub fn stage_all(&self) -> Result<()> {
         self.run(["add", "--all", "--"]).map(|_| ())
     }
@@ -540,7 +540,7 @@ pub struct Credentials {
 
 /// Asks git's configured credential helpers for credentials for `url`.
 ///
-/// This is why `ds` needs no remote configuration of its own: whatever the user
+/// This is why `tsp` needs no remote configuration of its own: whatever the user
 /// already set up for `git push` works unchanged.
 pub fn credential_fill(url: &str) -> Result<Credentials> {
     let args = ["credential", "fill"];
@@ -632,8 +632,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for args in [
             vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "ds@example.test"],
-            vec!["config", "user.name", "ds test"],
+            vec!["config", "user.email", "tsp@example.test"],
+            vec!["config", "user.name", "tsp test"],
         ] {
             run_in(dir.path(), args).unwrap();
         }
@@ -659,11 +659,11 @@ mod tests {
     #[test]
     fn write_blob_matches_git_hash_object() {
         let (_d, git) = repo();
-        let sha = git.write_blob(b"hello ds\n").unwrap();
+        let sha = git.write_blob(b"hello tsp\n").unwrap();
 
         // The blob is really in the object database.
         let back = git.run(["cat-file", "-p", &sha]).unwrap();
-        assert_eq!(back.stdout, b"hello ds\n");
+        assert_eq!(back.stdout, b"hello tsp\n");
         assert_eq!(sha.len(), 40);
     }
 
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn config_returns_none_when_unset() {
         let (_d, git) = repo();
-        assert_eq!(git.config("ds.definitely.unset").unwrap(), None);
+        assert_eq!(git.config("tsp.definitely.unset").unwrap(), None);
     }
 
     #[test]

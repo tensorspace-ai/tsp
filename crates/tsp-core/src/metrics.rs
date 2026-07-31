@@ -1,6 +1,6 @@
 //! Reading and comparing metrics files.
 //!
-//! The flattening rules match Gitea's `services/ds/metrics.go` so a number
+//! The flattening rules match Gitea's `services/tsp/metrics.go` so a number
 //! shown on the Data tab and the same number here read identically. JSON is
 //! tried first because that is what training code usually writes.
 

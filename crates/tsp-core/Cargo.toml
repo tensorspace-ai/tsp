@@ -1,5 +1,6 @@
 [package]
-name = "ds-core"
+description = "Reproducible pipelines and experiments, versioned in git"
+name = "tsp-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

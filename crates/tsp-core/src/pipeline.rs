@@ -1,6 +1,6 @@
 //! The `ds.yaml` pipeline format.
 //!
-//! This is a contract, not an internal structure: Gitea's `modules/ds` parses
+//! This is a contract, not an internal structure: Gitea's `modules/tsp` parses
 //! the same file to draw the DAG, and DVC's `dvc.yaml` is the same shape. The
 //! polymorphic spellings below (`cmd` as scalar or list, an out as a bare path
 //! or a single-key mapping) exist because DVC accepts them, so files in the
@@ -35,7 +35,7 @@ pub enum PipelineError {
     #[error("stage {0:?} is not defined in the pipeline")]
     UnknownStage(String),
     #[error(
-        "{path} is schema {found} and this ds understands {SCHEMA}; upgrade ds to read this pipeline"
+        "{path} is schema {found} and this tsp understands {SCHEMA}; upgrade tsp to read this pipeline"
     )]
     UnsupportedSchema { path: String, found: u32 },
 }
@@ -43,7 +43,12 @@ pub enum PipelineError {
 type Result<T> = std::result::Result<T, PipelineError>;
 
 /// Candidate file names, in the order they are looked for.
-pub const FILE_NAMES: [&str; 2] = ["ds.yaml", "dvc.yaml"];
+///
+/// `tsp.yaml` is what a new repository should use. The other two are read
+/// forever: `ds.yaml` is what this tool called its own pipeline before it was
+/// renamed, and `dvc.yaml` is the same shape written by DVC. Renaming a tool is
+/// not a reason to stop reading files people already committed.
+pub const FILE_NAMES: [&str; 3] = ["tsp.yaml", "ds.yaml", "dvc.yaml"];
 
 /// The pipeline shape this version understands.
 ///
@@ -181,7 +186,7 @@ impl Stage {
 pub struct Artifact {
     pub path: String,
     /// `cache: false` keeps a small artifact — a metrics file, usually — in
-    /// git rather than LFS. `ds` only reads this to decide what it may expect
+    /// git rather than LFS. `tsp` only reads this to decide what it may expect
     /// to find as a pointer; moving the bytes is git's job either way.
     pub cache: bool,
     pub persist: bool,

@@ -1,6 +1,6 @@
 //! Path hygiene applied when data is first tracked.
 //!
-//! These checks belong at `ds track` time, not at checkout time. A dataset
+//! These checks belong at `tsp track` time, not at checkout time. A dataset
 //! built on Linux can contain paths that simply cannot exist on macOS or
 //! Windows; discovering that halfway through materializing 300 GB is the worst
 //! possible moment to find out.

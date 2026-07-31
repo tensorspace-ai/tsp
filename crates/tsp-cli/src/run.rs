@@ -3,7 +3,7 @@
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use ds_core::graph::Status;
+use tsp_core::graph::Status;
 
 use crate::repo::Repo;
 

@@ -1,6 +1,6 @@
 //! Experiments: a pipeline run recorded as a commit nobody's branch points at.
 //!
-//! An experiment is an ordinary git commit under `refs/ds/exps/`, parented on
+//! An experiment is an ordinary git commit under `refs/tsp/exps/`, parented on
 //! the HEAD it was run from. That buys three things for free: the outputs are
 //! real objects so `git gc` keeps them alive, LFS-tracked data in an experiment
 //! is pushed and fetched by the same machinery as anything else, and comparing
@@ -10,7 +10,7 @@
 //! trace beyond the refs it created.
 
 use anyhow::{Context, Result, bail};
-use ds_core::params::{self, Override};
+use tsp_core::params::{self, Override};
 
 use crate::metrics::{self, Metric};
 use crate::repo::Repo;
@@ -18,16 +18,29 @@ use crate::run;
 
 /// Where experiment commits live. Outside `refs/heads/` so they never appear as
 /// branches, and outside `refs/tags/` so they are not pushed by default.
-pub const REF_PREFIX: &str = "refs/ds/exps";
+pub const REF_PREFIX: &str = "refs/tsp/exps";
+
+/// Where they lived before the tool was renamed.
+///
+/// These are commits, not a cache: an experiment recorded under the old prefix
+/// is somebody's result and stays listable and applicable forever. New ones are
+/// written under the new prefix, and nothing rewrites the old.
+pub const LEGACY_REF_PREFIX: &str = "refs/ds/exps";
+
+const REF_PREFIXES: [&str; 2] = [REF_PREFIX, LEGACY_REF_PREFIX];
 
 pub struct Experiment {
     pub name: String,
     pub commit: String,
+    /// The namespace this one actually lives in. Carried rather than assumed so
+    /// that removing or applying an experiment recorded before the rename acts
+    /// on the ref that exists instead of the one we would write today.
+    pub prefix: &'static str,
 }
 
 impl Experiment {
     pub fn ref_name(&self) -> String {
-        format!("{REF_PREFIX}/{}", self.name)
+        format!("{}/{}", self.prefix, self.name)
     }
 }
 
@@ -66,9 +79,9 @@ fn record(
     repo.stage_run_outputs()?;
     let tree = repo.git().write_tree()?;
     let summary = match overrides.is_empty() {
-        true => "ds experiment".to_owned(),
+        true => "tsp experiment".to_owned(),
         false => format!(
-            "ds experiment: {}",
+            "tsp experiment: {}",
             overrides
                 .iter()
                 .map(|o| format!("{}={}", o.key, o.value))
@@ -83,7 +96,11 @@ fn record(
         Some(given) => validate_name(given)?.to_owned(),
         None => format!("exp-{}", &commit[..7]),
     };
-    let experiment = Experiment { name, commit };
+    let experiment = Experiment {
+        name,
+        commit,
+        prefix: REF_PREFIX,
+    };
     repo.git()
         .update_ref(&experiment.ref_name(), &experiment.commit)?;
     Ok(experiment)
@@ -92,7 +109,7 @@ fn record(
 fn apply_overrides(repo: &Repo, overrides: &[Override]) -> Result<()> {
     for (file, entries) in params::by_file(overrides) {
         let path = repo.root().join(file);
-        let mut params = ds_core::params::Params::read_optional(&path)?;
+        let mut params = tsp_core::params::Params::read_optional(&path)?;
         for entry in entries {
             params.set(&entry.key, entry.value.clone())?;
         }
@@ -123,25 +140,31 @@ fn validate_name(name: &str) -> Result<&str> {
 }
 
 pub fn list(repo: &Repo) -> Result<Vec<Experiment>> {
-    Ok(repo
-        .git()
-        .refs_under(REF_PREFIX)?
-        .into_iter()
-        .filter_map(|(name, commit)| {
-            name.strip_prefix(&format!("{REF_PREFIX}/"))
-                .map(|short| Experiment {
+    let mut found = Vec::new();
+    for prefix in REF_PREFIXES {
+        for (name, commit) in repo.git().refs_under(prefix)? {
+            if let Some(short) = name.strip_prefix(&format!("{prefix}/")) {
+                // A name recorded under both prefixes is one experiment, and
+                // the current namespace is the one that describes it.
+                if found.iter().any(|e: &Experiment| e.name == short) {
+                    continue;
+                }
+                found.push(Experiment {
                     name: short.to_owned(),
                     commit,
-                })
-        })
-        .collect())
+                    prefix,
+                });
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub fn find(repo: &Repo, name: &str) -> Result<Experiment> {
     list(repo)?
         .into_iter()
         .find(|e| e.name == name)
-        .with_context(|| format!("no experiment named {name:?}; `ds exp list` shows them"))
+        .with_context(|| format!("no experiment named {name:?}; `tsp exp list` shows them"))
 }
 
 /// The metrics an experiment produced.
@@ -165,7 +188,7 @@ pub fn apply(repo: &Repo, experiment: &Experiment) -> Result<Vec<String>> {
         paths.extend(stage.out_paths().into_iter().map(str::to_owned));
         paths.extend(stage.params.iter().map(|p| p.file.clone()));
     }
-    paths.push(ds_core::lock::FILE_NAME.to_owned());
+    paths.push(repo.lock_name().to_owned());
     paths.sort();
     paths.dedup();
 
@@ -224,7 +247,20 @@ mod tests {
         let experiment = Experiment {
             name: "exp-abc1234".to_owned(),
             commit: "abc".to_owned(),
+            prefix: REF_PREFIX,
         };
-        assert_eq!(experiment.ref_name(), "refs/ds/exps/exp-abc1234");
+        assert_eq!(experiment.ref_name(), "refs/tsp/exps/exp-abc1234");
+    }
+
+    /// An experiment recorded before the rename is somebody's result, so it
+    /// stays addressable at the ref it was actually written to.
+    #[test]
+    fn a_legacy_experiment_keeps_its_own_ref() {
+        let experiment = Experiment {
+            name: "depth-12".to_owned(),
+            commit: "abc".to_owned(),
+            prefix: LEGACY_REF_PREFIX,
+        };
+        assert_eq!(experiment.ref_name(), "refs/ds/exps/depth-12");
     }
 }

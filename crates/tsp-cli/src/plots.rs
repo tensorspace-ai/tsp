@@ -1,16 +1,16 @@
-//! `ds plots`: collecting plot data across revisions and writing it out.
+//! `tsp plots`: collecting plot data across revisions and writing it out.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use ds_core::figure::{self, Loaded};
-use ds_core::plotdata;
-use ds_core::plots::Plot;
-use ds_core::svg;
+use tsp_core::figure::{self, Loaded};
+use tsp_core::plotdata;
+use tsp_core::plots::Plot;
+use tsp_core::svg;
 
 use crate::repo::Repo;
 
-/// Where `ds plots` writes, matching DVC's default so the directory is already
+/// Where `tsp plots` writes, matching DVC's default so the directory is already
 /// in people's ignore files.
 pub const OUT_DIR: &str = "ds_plots";
 
@@ -101,7 +101,7 @@ pub fn write_page(
 
     let rendered: Vec<String> = figures.iter().map(svg::render).collect();
     let path = dir.join("index.html");
-    std::fs::write(&path, svg::page("ds plots", &rendered))
+    std::fs::write(&path, svg::page("tsp plots", &rendered))
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }

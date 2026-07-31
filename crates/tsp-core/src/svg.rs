@@ -1,7 +1,7 @@
 //! Drawing a figure as SVG.
 //!
 //! Rendered here rather than handed to a JavaScript charting library because
-//! `ds plots show` has to work with no network and no browser toolchain: the
+//! `tsp plots show` has to work with no network and no browser toolchain: the
 //! output is one file you can open, mail, or paste into a report.
 //!
 //! Colours are the four-hue categorical set validated for both light and dark
@@ -59,12 +59,12 @@ pub fn render(plot: &Rendered) -> String {
         }
         Figure::Confusion { matrices } => confusion(matrices),
         Figure::Empty { reason } => {
-            format!("<p class=\"ds-plot-empty\">{}</p>", escape(reason))
+            format!("<p class=\"tsp-plot-empty\">{}</p>", escape(reason))
         }
     };
 
     format!(
-        "<figure class=\"ds-plot\">\n<figcaption>{}</figcaption>\n{body}\n</figure>",
+        "<figure class=\"tsp-plot\">\n<figcaption>{}</figcaption>\n{body}\n</figure>",
         escape(&plot.title)
     )
 }
@@ -103,7 +103,7 @@ fn xy(plot: &Rendered, series: &[Series], line: bool, markers: bool) -> String {
     let mut svg = String::new();
     let _ = write!(
         svg,
-        "<svg viewBox=\"0 0 {WIDTH} {HEIGHT}\" role=\"img\" aria-label=\"{}\" class=\"ds-plot-svg\">",
+        "<svg viewBox=\"0 0 {WIDTH} {HEIGHT}\" role=\"img\" aria-label=\"{}\" class=\"tsp-plot-svg\">",
         escape(&plot.title)
     );
 
@@ -139,7 +139,7 @@ fn xy(plot: &Rendered, series: &[Series], line: bool, markers: bool) -> String {
                 let _ = write!(
                     svg,
                     "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"4\" fill=\"{hue}\" \
-                     stroke=\"var(--ds-plot-surface)\" stroke-width=\"1.5\"><title>{} ({:.4}, {:.4})</title></circle>",
+                     stroke=\"var(--tsp-plot-surface)\" stroke-width=\"1.5\"><title>{} ({:.4}, {:.4})</title></circle>",
                     sx(*x),
                     sy(*y),
                     escape(&s.label),
@@ -171,8 +171,8 @@ fn grid(scale: &Scale) -> String {
         let _ = write!(
             out,
             "<line x1=\"{PAD_LEFT}\" y1=\"{py:.2}\" x2=\"{:.2}\" y2=\"{py:.2}\" \
-             stroke=\"var(--ds-plot-grid)\" stroke-width=\"1\"/>\
-             <text x=\"{:.2}\" y=\"{:.2}\" class=\"ds-plot-tick\" text-anchor=\"end\">{}</text>",
+             stroke=\"var(--tsp-plot-grid)\" stroke-width=\"1\"/>\
+             <text x=\"{:.2}\" y=\"{:.2}\" class=\"tsp-plot-tick\" text-anchor=\"end\">{}</text>",
             PAD_LEFT + plot_w,
             PAD_LEFT - 8.0,
             py + 4.0,
@@ -183,7 +183,7 @@ fn grid(scale: &Scale) -> String {
         let px = sx(x);
         let _ = write!(
             out,
-            "<text x=\"{px:.2}\" y=\"{:.2}\" class=\"ds-plot-tick\" text-anchor=\"middle\">{}</text>",
+            "<text x=\"{px:.2}\" y=\"{:.2}\" class=\"tsp-plot-tick\" text-anchor=\"middle\">{}</text>",
             PAD_TOP + plot_h + 20.0,
             tick(x)
         );
@@ -193,8 +193,8 @@ fn grid(scale: &Scale) -> String {
 
 fn axis_labels(x_label: &str, y_label: &str) -> String {
     format!(
-        "<text x=\"{:.1}\" y=\"{:.1}\" class=\"ds-plot-axis\" text-anchor=\"middle\">{}</text>\
-         <text class=\"ds-plot-axis\" text-anchor=\"middle\" \
+        "<text x=\"{:.1}\" y=\"{:.1}\" class=\"tsp-plot-axis\" text-anchor=\"middle\">{}</text>\
+         <text class=\"tsp-plot-axis\" text-anchor=\"middle\" \
          transform=\"translate(14 {:.1}) rotate(-90)\">{}</text>",
         PAD_LEFT + (WIDTH - PAD_LEFT - PAD_RIGHT) / 2.0,
         HEIGHT - 8.0,
@@ -218,7 +218,7 @@ fn bar(plot: &Rendered, bars: &[(String, f64)]) -> String {
     let plot_w = WIDTH - PAD_LEFT - PAD_RIGHT - value_gutter;
 
     let mut svg = format!(
-        "<svg viewBox=\"0 0 {WIDTH} {height:.1}\" role=\"img\" aria-label=\"{}\" class=\"ds-plot-svg\">",
+        "<svg viewBox=\"0 0 {WIDTH} {height:.1}\" role=\"img\" aria-label=\"{}\" class=\"tsp-plot-svg\">",
         escape(&plot.title)
     );
 
@@ -230,8 +230,8 @@ fn bar(plot: &Rendered, bars: &[(String, f64)]) -> String {
             // 4px rounded data-end, anchored to the baseline at x = PAD_LEFT.
             "<rect x=\"{PAD_LEFT}\" y=\"{:.1}\" width=\"{w:.2}\" height=\"{:.1}\" rx=\"4\" \
              fill=\"{}\"><title>{} {}</title></rect>\
-             <text x=\"{:.1}\" y=\"{:.1}\" class=\"ds-plot-tick\" text-anchor=\"end\">{}</text>\
-             <text x=\"{:.2}\" y=\"{:.1}\" class=\"ds-plot-value\">{}</text>",
+             <text x=\"{:.1}\" y=\"{:.1}\" class=\"tsp-plot-tick\" text-anchor=\"end\">{}</text>\
+             <text x=\"{:.2}\" y=\"{:.1}\" class=\"tsp-plot-value\">{}</text>",
             y + 4.0,
             row_h - 10.0,
             HUES[0],
@@ -267,9 +267,9 @@ fn confusion(matrices: &[Matrix]) -> String {
             .max(f64::MIN_POSITIVE);
 
         if matrices.len() > 1 {
-            let _ = write!(out, "<p class=\"ds-plot-rev\">{}</p>", escape(&m.rev));
+            let _ = write!(out, "<p class=\"tsp-plot-rev\">{}</p>", escape(&m.rev));
         }
-        out.push_str("<table class=\"ds-matrix\"><thead><tr><th></th>");
+        out.push_str("<table class=\"tsp-matrix\"><thead><tr><th></th>");
         for col in &m.cols {
             let _ = write!(out, "<th scope=\"col\">{}</th>", escape(col));
         }
@@ -289,8 +289,8 @@ fn confusion(matrices: &[Matrix]) -> String {
                 };
                 let _ = write!(
                     out,
-                    "<td style=\"--w:{weight:.3}\"><span class=\"ds-matrix-fill\"></span>\
-                     <span class=\"ds-matrix-value\">{shown}</span></td>"
+                    "<td style=\"--w:{weight:.3}\"><span class=\"tsp-matrix-fill\"></span>\
+                     <span class=\"tsp-matrix-value\">{shown}</span></td>"
                 );
             }
             out.push_str("</tr>");
@@ -301,7 +301,7 @@ fn confusion(matrices: &[Matrix]) -> String {
 }
 
 fn legend<'a>(labels: impl Iterator<Item = &'a str>) -> String {
-    let mut out = String::from("<ul class=\"ds-plot-legend\">");
+    let mut out = String::from("<ul class=\"tsp-plot-legend\">");
     for (i, label) in labels.enumerate() {
         let _ = write!(
             out,
@@ -347,50 +347,50 @@ pub fn page(title: &str, figures: &[String]) -> String {
 /// validated against the dark surface rather than lightened from the light set.
 const STYLE: &str = r#"
 :root {
-  --ds-plot-surface: #ffffff;
-  --ds-plot-ink: #1b1c1d;
-  --ds-plot-muted: #6b7176;
-  --ds-plot-grid: #e4e6e8;
-  --ds-plot-seq: #2185d0;
+  --tsp-plot-surface: #ffffff;
+  --tsp-plot-ink: #1b1c1d;
+  --tsp-plot-muted: #6b7176;
+  --tsp-plot-grid: #e4e6e8;
+  --tsp-plot-seq: #2185d0;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --ds-plot-surface: #161718;
-    --ds-plot-ink: #dbdbdb;
-    --ds-plot-muted: #9a9ea1;
-    --ds-plot-grid: #2c2e30;
-    --ds-plot-seq: #3a8ac6;
+    --tsp-plot-surface: #161718;
+    --tsp-plot-ink: #dbdbdb;
+    --tsp-plot-muted: #9a9ea1;
+    --tsp-plot-grid: #2c2e30;
+    --tsp-plot-seq: #3a8ac6;
   }
 }
 body {
   margin: 0 auto; padding: 32px 20px; max-width: 860px;
-  background: var(--ds-plot-surface); color: var(--ds-plot-ink);
+  background: var(--tsp-plot-surface); color: var(--tsp-plot-ink);
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 h1 { font-size: 20px; margin: 0 0 24px; }
-.ds-plot { margin: 0 0 36px; }
-.ds-plot figcaption { font-weight: 600; margin-bottom: 8px; }
-.ds-plot-svg { width: 100%; height: auto; overflow: visible; }
-.ds-plot-tick { fill: var(--ds-plot-muted); font-size: 11px; }
-.ds-plot-value { fill: var(--ds-plot-ink); font-size: 11px; }
-.ds-plot-axis { fill: var(--ds-plot-muted); font-size: 11px; }
-.ds-plot-empty { color: var(--ds-plot-muted); font-style: italic; }
-.ds-plot-rev { color: var(--ds-plot-muted); margin: 12px 0 4px; }
-.ds-plot-legend {
+.tsp-plot { margin: 0 0 36px; }
+.tsp-plot figcaption { font-weight: 600; margin-bottom: 8px; }
+.tsp-plot-svg { width: 100%; height: auto; overflow: visible; }
+.tsp-plot-tick { fill: var(--tsp-plot-muted); font-size: 11px; }
+.tsp-plot-value { fill: var(--tsp-plot-ink); font-size: 11px; }
+.tsp-plot-axis { fill: var(--tsp-plot-muted); font-size: 11px; }
+.tsp-plot-empty { color: var(--tsp-plot-muted); font-style: italic; }
+.tsp-plot-rev { color: var(--tsp-plot-muted); margin: 12px 0 4px; }
+.tsp-plot-legend {
   display: flex; flex-wrap: wrap; gap: 14px;
   list-style: none; margin: 10px 0 0; padding: 0;
-  font-size: 12px; color: var(--ds-plot-muted);
+  font-size: 12px; color: var(--tsp-plot-muted);
 }
-.ds-plot-legend li { display: flex; align-items: center; gap: 6px; }
-.ds-plot-legend i { width: 10px; height: 10px; border-radius: 2px; }
-.ds-matrix { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
-.ds-matrix th { color: var(--ds-plot-muted); font-weight: 500; padding: 4px 8px; text-align: right; }
-.ds-matrix td { position: relative; padding: 8px 12px; text-align: right; min-width: 56px; }
-.ds-matrix-fill {
+.tsp-plot-legend li { display: flex; align-items: center; gap: 6px; }
+.tsp-plot-legend i { width: 10px; height: 10px; border-radius: 2px; }
+.tsp-matrix { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
+.tsp-matrix th { color: var(--tsp-plot-muted); font-weight: 500; padding: 4px 8px; text-align: right; }
+.tsp-matrix td { position: relative; padding: 8px 12px; text-align: right; min-width: 56px; }
+.tsp-matrix-fill {
   position: absolute; inset: 0; border-radius: 3px;
-  background: var(--ds-plot-seq); opacity: calc(var(--w) * 0.85);
+  background: var(--tsp-plot-seq); opacity: calc(var(--w) * 0.85);
 }
-.ds-matrix-value { position: relative; }
+.tsp-matrix-value { position: relative; }
 "#;
 
 #[cfg(test)]
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn a_single_series_gets_no_legend() {
         let svg = render(&rendered(xy_figure(vec![series("loss", &[[0.0, 1.0]])])));
-        assert!(!svg.contains("ds-plot-legend"), "{svg}");
+        assert!(!svg.contains("tsp-plot-legend"), "{svg}");
     }
 
     #[test]
@@ -449,7 +449,7 @@ mod tests {
             series("a", &[[0.0, 1.0]]),
             series("b", &[[0.0, 2.0]]),
         ])));
-        assert!(svg.contains("ds-plot-legend"));
+        assert!(svg.contains("tsp-plot-legend"));
         assert!(svg.contains(HUES[0]));
         assert!(svg.contains(HUES[1]));
     }
@@ -476,7 +476,7 @@ mod tests {
             }],
         }));
 
-        assert!(svg.contains("<table class=\"ds-matrix\""), "{svg}");
+        assert!(svg.contains("<table class=\"tsp-matrix\""), "{svg}");
         assert!(svg.contains("scope=\"col\""), "headers are real headers");
         assert!(svg.contains("--w:1.000"), "the peak cell is fully weighted");
         assert!(svg.contains("--w:0.000"), "an empty cell has no fill");
@@ -508,7 +508,7 @@ mod tests {
         }));
 
         let x = svg
-            .split("class=\"ds-plot-value\"")
+            .split("class=\"tsp-plot-value\"")
             .next()
             .and_then(|before| before.rsplit("<text x=\"").next())
             .and_then(|s| s.split('"').next())

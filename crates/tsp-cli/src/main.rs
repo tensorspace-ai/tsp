@@ -1,9 +1,9 @@
-//! `ds` — reproducible pipelines and experiments on top of git.
+//! `tsp` — reproducible pipelines and experiments on top of git.
 //!
 //! Data management is not here. Datasets belong in Git LFS through an ordinary
 //! `filter=lfs` gitattribute, which means `git add`, `git push`, `git checkout`
 //! and `git clone` move bytes with no help from this tool, and `git lfs prune`
-//! and `git lfs fsck` maintain them. What `ds` adds is the layer git has no
+//! and `git lfs fsck` maintain them. What `tsp` adds is the layer git has no
 //! opinion about: which stages produced which artifacts, whether that record
 //! still holds, and what a given experiment changed.
 
@@ -15,15 +15,15 @@ mod run;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use ds_core::git::Git;
-use ds_core::metrics;
-use ds_core::params::Override;
+use tsp_core::git::Git;
+use tsp_core::metrics;
+use tsp_core::params::Override;
 
 use repo::Repo;
 
 #[derive(Parser)]
 #[command(
-    name = "ds",
+    name = "tsp",
     version,
     about = "Reproducible pipelines and experiments, versioned in git"
 )]
@@ -34,7 +34,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Set the repository up for `ds` and Git LFS
+    /// Set the repository up for `tsp` and Git LFS
     Init {
         /// Path patterns to send to Git LFS, e.g. "data/**" "models/**"
         #[arg(long = "lfs", value_name = "PATTERN")]
@@ -121,7 +121,7 @@ fn main() -> Result<()> {
 
 /// Configures Git LFS and installs the guard hook.
 ///
-/// `ds` does not move data, so this is mostly a matter of handing the job to
+/// `tsp` does not move data, so this is mostly a matter of handing the job to
 /// git-lfs properly: install its filters, then record the patterns that decide
 /// what counts as data.
 fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
@@ -144,13 +144,13 @@ fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
         println!("\nTell Git LFS what counts as data, e.g.:");
         println!("  git lfs track \"data/**\" \"models/**\"");
     }
-    println!("\nDescribe your stages in ds.yaml, then run `ds repro`.");
+    println!("\nDescribe your stages in ds.yaml, then run `tsp repro`.");
     Ok(())
 }
 
-/// Clears the `pre-push` hook older versions of `ds` installed.
+/// Clears the `pre-push` hook older versions of `tsp` installed.
 ///
-/// That hook ran `ds push`, a command that no longer exists, so leaving it in
+/// That hook ran `tsp push`, a command that no longer exists, so leaving it in
 /// place would fail every push. It also occupies the slot `git lfs install`
 /// wants, which is what makes this a migration step rather than a nicety. Only
 /// a hook carrying our own marker is touched.
@@ -164,7 +164,7 @@ fn remove_obsolete_push_hook(git: &Git) -> Result<()> {
     }
 
     std::fs::remove_file(&path)?;
-    println!("Removed the obsolete ds pre-push hook; git-lfs uploads data now.");
+    println!("Removed the obsolete tsp pre-push hook; git-lfs uploads data now.");
     Ok(())
 }
 
@@ -213,8 +213,8 @@ git diff --cached --name-only --diff-filter=ACM | while IFS= read -r path; do
     [ "$size" -le "$limit" ] && continue
     if ! git cat-file -p "$sha" 2>/dev/null | head -n 1 |
         grep -q '^version https://git-lfs.github.com/spec/v1$'; then
-        echo "ds: refusing to commit $path ($size bytes, not an LFS pointer)" >&2
-        echo "ds: track it with 'git lfs track \"$path\"', or bypass with --no-verify" >&2
+        echo "tsp: refusing to commit $path ($size bytes, not an LFS pointer)" >&2
+        echo "tsp: track it with 'git lfs track \"$path\"', or bypass with --no-verify" >&2
         exit 1
     fi
 done || fail=1
@@ -232,7 +232,7 @@ fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> 
     println!(
         "\nRan {} stage(s); {} updated and staged.",
         ran.len(),
-        ds_core::lock::FILE_NAME
+        repo.lock_name()
     );
     println!("Commit the result with `git commit`; `git push` uploads the data.");
     Ok(())
@@ -261,7 +261,7 @@ fn status(cwd: &std::path::Path) -> Result<()> {
 
     println!("\n{} stage(s); {stale} need running.", statuses.len());
     if stale > 0 {
-        println!("Bring them up to date with `ds repro`.");
+        println!("Bring them up to date with `tsp repro`.");
     }
     Ok(())
 }
@@ -329,7 +329,7 @@ fn show_plots(cwd: &std::path::Path, revisions: &[String], out: &str) -> Result<
     let path = plots::write_page(&repo, &figures, out)?;
     for figure in &figures {
         let detail = match &figure.figure {
-            ds_core::figure::Figure::Empty { reason } => format!(" — {reason}"),
+            tsp_core::figure::Figure::Empty { reason } => format!(" — {reason}"),
             _ => String::new(),
         };
         println!("  {} ({}){detail}", figure.name, figure.template);
@@ -363,7 +363,7 @@ fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>) -> Result<
             "HEAD",
         );
     }
-    println!("\nApply it with `ds exp apply {}`.", experiment.name);
+    println!("\nApply it with `tsp exp apply {}`.", experiment.name);
     Ok(())
 }
 
@@ -372,7 +372,7 @@ fn exp_list(cwd: &std::path::Path) -> Result<()> {
     let experiments = exp::list(&repo)?;
 
     if experiments.is_empty() {
-        println!("No experiments yet. Run one with `ds exp run --set key=value`.");
+        println!("No experiments yet. Run one with `tsp exp run --set key=value`.");
         return Ok(());
     }
 

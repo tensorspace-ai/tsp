@@ -1,5 +1,6 @@
 [package]
-name = "ds"
+description = "Reproducible pipelines and experiments, versioned in git"
+name = "tsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +11,7 @@ repository.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.4", features = ["derive"] }
-ds-core = { version = "0.1.0", path = "../ds-core" }
+tsp-core = { version = "0.1.0", path = "../tsp-core" }
 serde_json = "1.0.151"
 
 [dev-dependencies]

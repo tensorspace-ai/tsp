@@ -1,7 +1,7 @@
-//! Core domain types for `ds`: the pipeline and lock formats, parameters, the
+//! Core domain types for `tsp`: the pipeline and lock formats, parameters, the
 //! stage graph, and the git plumbing they are read through.
 //!
-//! `ds` does not manage data. Datasets live in Git LFS, tracked by an ordinary
+//! `tsp` does not manage data. Datasets live in Git LFS, tracked by an ordinary
 //! `filter=lfs` gitattribute, so `git add`, `git push` and `git checkout` move
 //! bytes with no help from this tool. What is left — and what this crate is
 //! about — is the layer above: which stages produced which artifacts, whether

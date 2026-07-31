@@ -1,6 +1,6 @@
 //! Cross-checks our pointer parsing against the real `git-lfs` binary.
 //!
-//! git-lfs writes the pointers now, and `ds` reads them to learn what a stage
+//! git-lfs writes the pointers now, and `tsp` reads them to learn what a stage
 //! produced. Agreement on the format is therefore a precondition for the lock
 //! recording the right digest — and for reading it back at all.
 //!
@@ -10,7 +10,7 @@ use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ds_core::hash::hash_reader;
+use tsp_core::hash::hash_reader;
 
 fn git_lfs_available() -> bool {
     Command::new("git-lfs")
@@ -24,7 +24,7 @@ fn reference_pointer(content: &[u8]) -> Vec<u8> {
     // Unique per call: tests run concurrently and each one removes its dir.
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "ds-lfs-compat-{}-{}",
+        "tsp-lfs-compat-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
@@ -63,7 +63,7 @@ fn pointer_bytes_match_git_lfs() {
         return;
     }
 
-    assert_matches_git_lfs(b"hello ds\n");
+    assert_matches_git_lfs(b"hello tsp\n");
     assert_matches_git_lfs(&[0u8; 4096]);
     assert_matches_git_lfs("non-ascii: \u{1f600}\n".as_bytes());
 }
@@ -78,5 +78,5 @@ fn git_lfs_emits_no_pointer_for_empty_files() {
     }
 
     assert!(reference_pointer(b"").is_empty());
-    assert!(!ds_core::pointer::is_lfs_eligible(0));
+    assert!(!tsp_core::pointer::is_lfs_eligible(0));
 }

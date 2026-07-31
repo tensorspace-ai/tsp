@@ -1,15 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/ds-core", "crates/ds-cli"]
+members = ["crates/tsp-core", "crates/tsp-cli"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/jbenjoseph/ds"
+repository = "https://github.com/tensorspace-ai/tsp"
 
 [workspace.dependencies]
-ds-core = { version = "0.1.0", path = "crates/ds-core" }
+tsp-core = { version = "0.1.0", path = "crates/tsp-core" }
 
 # Release profile for a short-lived CLI that reads small YAML documents and
 # spawns git. Moving bytes is git-lfs's job, so startup dominates runtime.

@@ -2,7 +2,7 @@
 //!
 //! spec: <https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md#the-pointer>
 //!
-//! `ds` reads these; git-lfs's clean filter writes them. Reading is what makes
+//! `tsp` reads these; git-lfs's clean filter writes them. Reading is what makes
 //! locking cheap: a pointer already states the sha256 of the content it stands
 //! for, so recording the identity of a multi-gigabyte output costs a blob read
 //! rather than a pass over the data.

@@ -24,7 +24,7 @@ pub enum Status {
     Current,
     /// The stage has no lock entry at all.
     New,
-    /// A dependency moved. The reason names which, so `ds status` can say why.
+    /// A dependency moved. The reason names which, so `tsp status` can say why.
     Stale(String),
     /// Staleness is not decidable, because a dependency's path never resolved
     /// to something that could be looked up.
