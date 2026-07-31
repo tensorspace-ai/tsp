@@ -1,0 +1,613 @@
+[
+  {
+    "name": "empty document",
+    "kind": "pipeline",
+    "input": "",
+    "expected": {
+      "stages": [],
+      "plots": []
+    }
+  },
+  {
+    "name": "no stages",
+    "kind": "pipeline",
+    "input": "stages: {}\n",
+    "expected": {
+      "stages": [],
+      "plots": []
+    }
+  },
+  {
+    "name": "minimal stage",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: python train.py\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "python train.py",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "cmd as a sequence",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd:\n      - python a.py\n      - python b.py\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "python a.py\npython b.py",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "deps as a scalar",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run\n    deps: src/train.py\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [
+              "src/train.py"
+            ],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "outs as bare paths",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run\n    outs:\n      - models/model.pkl\n      - data/out.csv\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [
+              {
+                "path": "models/model.pkl",
+                "cache": true,
+                "persist": false
+              },
+              {
+                "path": "data/out.csv",
+                "cache": true,
+                "persist": false
+              }
+            ],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "outs as mappings with options",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run\n    outs:\n      - models/model.pkl:\n          cache: false\n      - data/keep.csv:\n          persist: true\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [
+              {
+                "path": "models/model.pkl",
+                "cache": false,
+                "persist": false
+              },
+              {
+                "path": "data/keep.csv",
+                "cache": true,
+                "persist": true
+              }
+            ],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "metrics with cache false",
+    "kind": "pipeline",
+    "input": "stages:\n  eval:\n    cmd: run\n    metrics:\n      - metrics.json:\n          cache: false\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "eval",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [
+              {
+                "path": "metrics.json",
+                "cache": false,
+                "persist": false
+              }
+            ],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "params scoped to a file",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run\n    params:\n      - params.yaml:\n          - train.seed\n          - train.depth\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [
+              {
+                "file": "params.yaml",
+                "keys": [
+                  "train.seed",
+                  "train.depth"
+                ]
+              }
+            ],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "params as bare keys",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run\n    params:\n      - train.seed\n      - train.depth\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [
+              {
+                "file": "params.yaml",
+                "keys": [
+                  "train.seed"
+                ]
+              },
+              {
+                "file": "params.yaml",
+                "keys": [
+                  "train.depth"
+                ]
+              }
+            ],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "params from two files",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run\n    params:\n      - params.yaml:\n          - seed\n      - models.yaml:\n          - forest.depth\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [
+              {
+                "file": "params.yaml",
+                "keys": [
+                  "seed"
+                ]
+              },
+              {
+                "file": "models.yaml",
+                "keys": [
+                  "forest.depth"
+                ]
+              }
+            ],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "stage plots with a template",
+    "kind": "pipeline",
+    "input": "stages:\n  eval:\n    cmd: run\n    plots:\n      - plots/confusion.json:\n          template: confusion\n          x: actual\n          y: predicted\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "eval",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [
+              {
+                "path": "plots/confusion.json",
+                "cache": true,
+                "template": "confusion",
+                "files": [
+                  "plots/confusion.json"
+                ]
+              }
+            ],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "stage plot as a bare path",
+    "kind": "pipeline",
+    "input": "stages:\n  eval:\n    cmd: run\n    plots:\n      - plots/roc.csv\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "eval",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [
+              {
+                "path": "plots/roc.csv",
+                "cache": true,
+                "template": "linear",
+                "files": [
+                  "plots/roc.csv"
+                ]
+              }
+            ],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "top-level multi-file plot",
+    "kind": "pipeline",
+    "input": "stages:\n  eval:\n    cmd: run\nplots:\n  - Learning curves:\n      template: linear\n      x: epoch\n      y:\n        plots/a.csv: acc\n        plots/b.csv: acc\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "eval",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": [
+        {
+          "name": "Learning curves",
+          "template": "linear",
+          "files": [
+            "plots/a.csv",
+            "plots/b.csv"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "top-level plot as a bare path",
+    "kind": "pipeline",
+    "input": "stages:\n  eval:\n    cmd: run\nplots:\n  - plots/roc.csv:\n      x: fpr\n      y: tpr\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "eval",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": [
+        {
+          "name": "plots/roc.csv",
+          "template": "linear",
+          "files": [
+            "plots/roc.csv"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "declaration order is preserved",
+    "kind": "pipeline",
+    "input": "stages:\n  zeta:\n    cmd: z\n  alpha:\n    cmd: a\n  mid:\n    cmd: m\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "zeta",
+          "stage": {
+            "cmd": "z",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "alpha",
+          "stage": {
+            "cmd": "a",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "mid",
+          "stage": {
+            "cmd": "m",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "wdir and desc",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    desc: Fit the model\n    wdir: src\n    cmd: run\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run",
+            "wdir": "src",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": "Fit the model"
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "schema stated as current",
+    "kind": "pipeline",
+    "input": "schema: 1\nstages:\n  a:\n    cmd: run\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "a",
+          "stage": {
+            "cmd": "run",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "schema from the future",
+    "kind": "pipeline",
+    "input": "schema: 2\nstages:\n  a:\n    cmd: run\n",
+    "rejected": true
+  },
+  {
+    "name": "empty lock",
+    "kind": "lock",
+    "input": "schema: 3\nstages: {}\n",
+    "expected": {
+      "schema": 3,
+      "stages": []
+    }
+  },
+  {
+    "name": "one stage with deps",
+    "kind": "lock",
+    "input": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    deps:\n      src/train.py: e753b03a96da287cb864f732b70a4d17329e6277\n",
+    "expected": {
+      "schema": 3,
+      "stages": [
+        {
+          "name": "train",
+          "cmd": "python train.py",
+          "params": {},
+          "deps": {
+            "src/train.py": "e753b03a96da287cb864f732b70a4d17329e6277"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "params carry their values",
+    "kind": "lock",
+    "input": "schema: 3\nstages:\n  train:\n    cmd: run\n    params:\n      params.yaml:\n        train.depth: 4\n        train.name: forest\n        train.rate: 0.01\n        train.flag: true\n",
+    "expected": {
+      "schema": 3,
+      "stages": [
+        {
+          "name": "train",
+          "cmd": "run",
+          "params": {
+            "params.yaml": {
+              "train.depth": 4,
+              "train.name": "forest",
+              "train.rate": 0.01,
+              "train.flag": true
+            }
+          },
+          "deps": {}
+        }
+      ]
+    }
+  },
+  {
+    "name": "two stages",
+    "kind": "lock",
+    "input": "schema: 3\nstages:\n  prepare:\n    cmd: p\n    deps:\n      a.py: aaaa\n  train:\n    cmd: t\n    deps:\n      b.py: bbbb\n",
+    "expected": {
+      "schema": 3,
+      "stages": [
+        {
+          "name": "prepare",
+          "cmd": "p",
+          "params": {},
+          "deps": {
+            "a.py": "aaaa"
+          }
+        },
+        {
+          "name": "train",
+          "cmd": "t",
+          "params": {},
+          "deps": {
+            "b.py": "bbbb"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "older schema",
+    "kind": "lock",
+    "input": "schema: 2\nstages:\n  a:\n    cmd: run\n",
+    "rejected": true
+  },
+  {
+    "name": "newer schema",
+    "kind": "lock",
+    "input": "schema: 4\nstages:\n  a:\n    cmd: run\n",
+    "rejected": true
+  },
+  {
+    "name": "missing schema",
+    "kind": "lock",
+    "input": "stages:\n  a:\n    cmd: run\n",
+    "rejected": true
+  }
+]
