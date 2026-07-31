@@ -1,5 +1,5 @@
 //! Object identity. An `Oid` is a sha256 digest, which is simultaneously the
-//! git-lfs object id, our cache key, and the identity a `ds.lock` records.
+//! git-lfs object id, our cache key, and the identity a `tsp.lock` records.
 
 use std::fmt;
 use std::str::FromStr;

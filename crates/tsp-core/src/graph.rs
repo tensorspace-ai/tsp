@@ -219,7 +219,7 @@ mod tests {
     use indexmap::IndexMap;
 
     fn pipeline(text: &str) -> Pipeline {
-        Pipeline::parse(text, "ds.yaml").unwrap()
+        Pipeline::parse(text, "tsp.yaml").unwrap()
     }
 
     const CHAIN: &str = r#"

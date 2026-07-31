@@ -1,4 +1,4 @@
-//! The `ds.yaml` pipeline format.
+//! The `tsp.yaml` pipeline format.
 //!
 //! This is a contract, not an internal structure: Gitea's `modules/tsp` parses
 //! the same file to draw the DAG, and DVC's `dvc.yaml` is the same shape. The
@@ -65,7 +65,7 @@ fn default_schema() -> u32 {
 ///
 /// `stages` is an `IndexMap` rather than a `HashMap` because declaration order
 /// is the tie-breaker for stage ordering and for the rendered DAG. A map that
-/// reordered on every run would produce a different `ds.lock` from identical
+/// reordered on every run would produce a different `tsp.lock` from identical
 /// inputs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Pipeline {
@@ -464,7 +464,7 @@ stages:
 "#;
 
     fn sample() -> Pipeline {
-        Pipeline::parse(SAMPLE, "ds.yaml").unwrap()
+        Pipeline::parse(SAMPLE, "tsp.yaml").unwrap()
     }
 
     #[test]
@@ -520,7 +520,7 @@ stages:
     fn params_accept_bare_keys_and_scoped_files() {
         let p = Pipeline::parse(
             "stages:\n  a:\n    cmd: x\n    params:\n      - seed\n      - other.yaml:\n          - k\n",
-            "ds.yaml",
+            "tsp.yaml",
         )
         .unwrap();
         let params = &p.stage("a").unwrap().params;
@@ -543,7 +543,7 @@ stages:
     fn a_stage_plot_carries_both_storage_and_drawing_options() {
         let p = Pipeline::parse(
             "stages:\n  evaluate:\n    cmd: e\n    plots:\n      - plots/confusion.json:\n          template: confusion\n          x: predicted\n          y: actual\n          cache: false\n",
-            "ds.yaml",
+            "tsp.yaml",
         )
         .unwrap();
 
@@ -561,7 +561,7 @@ stages:
     fn a_bare_plot_path_still_produces_a_plot() {
         let p = Pipeline::parse(
             "stages:\n  a:\n    cmd: x\n    plots: [plots/loss.csv]\n",
-            "ds.yaml",
+            "tsp.yaml",
         )
         .unwrap();
 
@@ -575,7 +575,7 @@ stages:
     fn plots_are_still_stage_outputs() {
         let p = Pipeline::parse(
             "stages:\n  a:\n    cmd: x\n    outs: [m.bin]\n    metrics: [m.json]\n    plots: [p.csv]\n",
-            "ds.yaml",
+            "tsp.yaml",
         )
         .unwrap();
         assert_eq!(
@@ -588,7 +588,7 @@ stages:
     fn a_top_level_plot_section_is_parsed() {
         let p = Pipeline::parse(
             "stages:\n  a:\n    cmd: x\nplots:\n  - Precision-Recall:\n      template: smooth\n      x: recall\n      y:\n        eval/prc.json: precision\n  - plots/roc.csv:\n      x: fpr\n      y: tpr\n",
-            "ds.yaml",
+            "tsp.yaml",
         )
         .unwrap();
 
@@ -601,14 +601,14 @@ stages:
 
     #[test]
     fn a_pipeline_without_plots_has_none() {
-        let p = Pipeline::parse("stages:\n  a:\n    cmd: x\n", "ds.yaml").unwrap();
+        let p = Pipeline::parse("stages:\n  a:\n    cmd: x\n", "tsp.yaml").unwrap();
         assert!(p.plots.is_empty());
     }
 
     #[test]
     fn an_empty_document_is_an_empty_pipeline() {
         assert!(
-            Pipeline::parse("stages: {}", "ds.yaml")
+            Pipeline::parse("stages: {}", "tsp.yaml")
                 .unwrap()
                 .stages
                 .is_empty()
@@ -625,7 +625,7 @@ stages:
 
     #[test]
     fn the_current_schema_is_accepted_when_stated() {
-        let p = Pipeline::parse("schema: 1\nstages:\n  a:\n    cmd: x\n", "ds.yaml").unwrap();
+        let p = Pipeline::parse("schema: 1\nstages:\n  a:\n    cmd: x\n", "tsp.yaml").unwrap();
         assert_eq!(p.schema, 1);
         assert_eq!(p.stages.len(), 1);
     }
@@ -635,7 +635,8 @@ stages:
     /// which is worse than refusing.
     #[test]
     fn a_newer_schema_is_refused_rather_than_read_partially() {
-        let err = Pipeline::parse("schema: 2\nstages:\n  a:\n    cmd: x\n", "ds.yaml").unwrap_err();
+        let err =
+            Pipeline::parse("schema: 2\nstages:\n  a:\n    cmd: x\n", "tsp.yaml").unwrap_err();
 
         assert!(
             matches!(err, PipelineError::UnsupportedSchema { found: 2, .. }),
@@ -643,7 +644,7 @@ stages:
         );
         let message = err.to_string();
         assert!(
-            message.contains("ds.yaml") && message.contains("schema 2"),
+            message.contains("tsp.yaml") && message.contains("schema 2"),
             "{message}"
         );
     }

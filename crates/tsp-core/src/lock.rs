@@ -1,4 +1,4 @@
-//! The `ds.lock` format: what each stage was run against.
+//! The `tsp.lock` format: what each stage was run against.
 //!
 //! The lock answers one question — has anything a stage depends on moved since
 //! it last ran — and carries only what is needed to answer it. Everything else
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_yaml() {
-        let back = Lock::parse(&sample().to_yaml().unwrap(), "ds.lock").unwrap();
+        let back = Lock::parse(&sample().to_yaml().unwrap(), "tsp.lock").unwrap();
 
         assert_eq!(back.schema, SCHEMA);
         let stage = &back.stages["train"];
@@ -197,7 +197,7 @@ mod tests {
             lock.stages.insert(name.to_owned(), LockStage::default());
         }
 
-        let back = Lock::parse(&lock.to_yaml().unwrap(), "ds.lock").unwrap();
+        let back = Lock::parse(&lock.to_yaml().unwrap(), "tsp.lock").unwrap();
         let names: Vec<&str> = back.stages.keys().map(String::as_str).collect();
         assert_eq!(names, ["prepare", "train", "evaluate"]);
     }
@@ -218,7 +218,7 @@ mod tests {
             },
         );
 
-        let back = Lock::parse(&lock.to_yaml().unwrap(), "ds.lock").unwrap();
+        let back = Lock::parse(&lock.to_yaml().unwrap(), "tsp.lock").unwrap();
         let paths: Vec<&str> = back.stages["a"].deps.keys().map(String::as_str).collect();
         assert_eq!(paths, ["z.py", "a.csv"]);
     }

@@ -7,7 +7,7 @@
 //! about — is the layer above: which stages produced which artifacts, whether
 //! that record still applies, and what an experiment changed.
 //!
-//! The `ds.yaml` and `ds.lock` formats are the contract with Gitea's Data tab,
+//! The `tsp.yaml` and `tsp.lock` formats are the contract with Gitea's Data tab,
 //! which parses both to render the DAG. They stay compatible with DVC's
 //! `dvc.yaml`/`dvc.lock` so existing repositories work unchanged.
 

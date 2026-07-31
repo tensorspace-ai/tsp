@@ -18,7 +18,7 @@ use tsp_core::pipeline::Pipeline;
 pub struct Repo {
     git: Git,
     root: PathBuf,
-    /// The pipeline file that was found, e.g. `ds.yaml`.
+    /// The pipeline file that was found, e.g. `tsp.yaml`.
     pub pipeline_file: String,
     pub pipeline: Pipeline,
     pub lock: Lock,
@@ -32,7 +32,7 @@ impl Repo {
 
         let Some((pipeline_file, pipeline)) = Pipeline::find(&root)? else {
             bail!(
-                "no pipeline file in {}; create a ds.yaml describing your stages",
+                "no pipeline file in {}; create a tsp.yaml describing your stages",
                 root.display()
             );
         };

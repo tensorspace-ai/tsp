@@ -1,6 +1,6 @@
 //! Emit cross-language conformance vectors for the Go pipeline/lock parsers.
 //!
-//! `ds.yaml` and `ds.lock` have two implementations: this crate writes them,
+//! `tsp.yaml` and `tsp.lock` have two implementations: this crate writes them,
 //! and Gitea's `modules/tsp` reads them to draw the DAG. A disagreement between
 //! the two does not crash anything — it renders a lineage graph that is quietly
 //! wrong, which is the worst failure this format has. So the cases below are
@@ -27,7 +27,7 @@ fn main() {
     let mut cases: Vec<Value> = Vec::new();
 
     for (name, input) in pipeline_cases() {
-        cases.push(match Pipeline::parse(input, "ds.yaml") {
+        cases.push(match Pipeline::parse(input, "tsp.yaml") {
             Ok(p) => json!({
                 "name": name,
                 "kind": "pipeline",
@@ -47,7 +47,7 @@ fn main() {
     }
 
     for (name, input) in lock_cases() {
-        cases.push(match Lock::parse(input, "ds.lock") {
+        cases.push(match Lock::parse(input, "tsp.lock") {
             Ok(lock) if lock.schema == tsp_core::lock::SCHEMA => json!({
                 "name": name,
                 "kind": "lock",
@@ -88,14 +88,14 @@ struct Staleness {
 /// Emits every stage's verdict, which is the part the two implementations have
 /// to agree on and the part nothing was watching.
 ///
-/// The parsers agreed on `ds.lock` for months while disagreeing about what it
+/// The parsers agreed on `tsp.lock` for months while disagreeing about what it
 /// meant: the CLI compared the parameter values the lock records and the server
 /// did not, so retuning a model left the CLI saying stale and the Data tab
 /// saying current about the same commit. Parsing vectors cannot catch that.
 /// These can.
 fn project_staleness(case: Staleness) -> Value {
-    let pipeline = Pipeline::parse(case.pipeline, "ds.yaml").expect("fixture pipeline parses");
-    let lock = Lock::parse(case.lock, "ds.lock").expect("fixture lock parses");
+    let pipeline = Pipeline::parse(case.pipeline, "tsp.yaml").expect("fixture pipeline parses");
+    let lock = Lock::parse(case.lock, "tsp.lock").expect("fixture lock parses");
 
     let git_sha_of = |path: &str| {
         case.deps
