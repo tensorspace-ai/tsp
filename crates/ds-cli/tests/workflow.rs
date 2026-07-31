@@ -239,6 +239,49 @@ fn repro_runs_stages_in_dependency_order_and_writes_the_lock() {
     );
 }
 
+/// A lock from a future schema is discarded whole, never read field by field.
+///
+/// This is what makes `schema:` load-bearing rather than decorative: adding a
+/// field is safe for older versions precisely because they never see one. If
+/// this version instead parsed what it recognised and dropped the rest, the
+/// first `ds repro` run by an older binary would silently delete the newer
+/// one's work — and the lock would still look plausible afterwards.
+#[test]
+fn a_lock_from_a_newer_schema_is_discarded_rather_than_partly_read() {
+    let f = Fixture::new();
+    f.ds_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    // A schema this binary does not write, carrying a field it cannot know.
+    f.write(
+        "ds.lock",
+        "schema: 4\nstages:\n  prepare:\n    cmd: sh scripts/prepare.sh\n    \
+         outs_digest: deadbeef\n",
+    );
+
+    let out = f.ds(&["status"]);
+    assert!(
+        out.status.success(),
+        "an unreadable lock is not a hard error"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("schema 4") && stderr.contains("ds.lock"),
+        "the warning should name the file and the schema it found:\n{stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("2 need running"),
+        "every stage reads as new, not just the one the foreign lock named:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // And the next run replaces it outright: no trace of the field survives.
+    f.ds_ok(&["repro"]);
+    let lock = f.read("ds.lock");
+    assert!(lock.contains("schema: 3"), "{lock}");
+    assert!(!lock.contains("outs_digest"), "{lock}");
+}
+
 /// An LFS-tracked dependency is recorded by its *pointer's* object id, never by
 /// hashing the data behind it — which is what makes locking a large input cost
 /// a blob read rather than a pass over gigabytes.
