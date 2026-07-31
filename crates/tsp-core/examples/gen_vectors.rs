@@ -14,7 +14,7 @@
 //! implementations must agree on for the DAG and the staleness of a stage to
 //! come out the same.
 //!
-//! Run: `cargo run -p ds-core --example gen_vectors > tests/vectors.json`
+//! Run: `cargo run -p tsp-core --example gen_vectors > tests/vectors.json`
 //! Every value in the output is derived from the inputs, so regenerating on an
 //! unchanged tree produces a byte-identical file.
 

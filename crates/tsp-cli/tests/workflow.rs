@@ -161,16 +161,17 @@ fn init_configures_lfs_and_the_guard_hook() {
     assert!(attributes.contains("filter=lfs"), "{attributes}");
 
     let hook = std::fs::read_to_string(f.root.join(".git/hooks/pre-commit")).unwrap();
-    assert!(hook.contains("ds-guard"), "{hook}");
+    assert!(hook.contains("tsp-guard"), "{hook}");
 
     // git-lfs owns the transfer hooks; tsp must not have replaced them.
     assert!(f.root.join(".git/hooks/pre-push").exists());
 }
 
-/// A repository set up by an older tsp carries a pre-push hook running a command
-/// that no longer exists, and it occupies the slot `git lfs install` needs.
+/// A repository set up by an older version carries a pre-push hook running a
+/// command that no longer exists, and it occupies the slot `git lfs install`
+/// needs.
 #[test]
-fn init_clears_the_pre_push_hook_an_older_ds_left() {
+fn init_clears_the_pre_push_hook_an_older_version_left() {
     let f = Fixture::new();
     f.write(
         ".git/hooks/pre-push",
@@ -185,6 +186,27 @@ fn init_clears_the_pre_push_hook_an_older_ds_left() {
         hook.contains("git lfs"),
         "git-lfs should own it now:\n{hook}"
     );
+}
+
+/// A guard hook installed before the rename is still ours, and still working.
+/// Warning about it would send the reader to fix something that is not broken.
+#[test]
+fn init_leaves_a_pre_rename_guard_hook_alone() {
+    let f = Fixture::new();
+    let path = f.root.join(".git/hooks/pre-commit");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\n# ds-guard: refuse a large blob\nexit 0\n",
+    )
+    .unwrap();
+
+    let out = f.tsp(&["init"]);
+    assert!(out.status.success());
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("left alone"),
+        "a hook we installed should not be reported as a foreign one"
+    );
+    assert!(std::fs::read_to_string(&path).unwrap().contains("ds-guard"));
 }
 
 /// A hook the user wrote is not ours to remove.

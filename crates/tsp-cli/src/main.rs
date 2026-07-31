@@ -181,7 +181,10 @@ fn install_guard_hook(git: &Git) -> Result<()> {
 
     if path.exists() {
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if !existing.contains("ds-guard") {
+        // Both markers count as ours: a repository set up before the rename
+        // has a working guard hook, and warning about it would send the reader
+        // to fix something that is not broken.
+        if !existing.contains("tsp-guard") && !existing.contains("ds-guard") {
             eprintln!(
                 "warning: {} already exists and was left alone; \
                  large-file protection is not installed",
@@ -201,7 +204,7 @@ fn install_guard_hook(git: &Git) -> Result<()> {
 }
 
 const GUARD_HOOK: &str = r#"#!/bin/sh
-# ds-guard: refuse to commit a large blob that is not an LFS pointer.
+# tsp-guard: refuse to commit a large blob that is not an LFS pointer.
 # git-lfs converts whatever .gitattributes matches; this catches the file that
 # no pattern covers, which is the one that ends up stuck in history.
 limit=1048576
