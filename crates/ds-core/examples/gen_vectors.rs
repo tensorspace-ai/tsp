@@ -18,6 +18,7 @@
 //! Every value in the output is derived from the inputs, so regenerating on an
 //! unchanged tree produces a byte-identical file.
 
+use ds_core::graph::{self, Resolver};
 use ds_core::lock::Lock;
 use ds_core::pipeline::{Artifact, Pipeline, Stage};
 use serde_json::{Value, json};
@@ -62,7 +63,188 @@ fn main() {
         });
     }
 
+    for case in staleness_cases() {
+        cases.push(project_staleness(case));
+    }
+
     println!("{}", serde_json::to_string_pretty(&cases).unwrap());
+}
+
+/// One staleness scenario: a pipeline, the lock a run left, and what the
+/// repository holds now.
+struct Staleness {
+    name: &'static str,
+    pipeline: &'static str,
+    lock: &'static str,
+    /// Each dependency's current git object id. A path that is absent from this
+    /// list does not exist at the viewed commit.
+    deps: Vec<(&'static str, &'static str)>,
+    /// Each parameter's current value, by file and dotted key, already
+    /// flattened — what a params file resolves to, not the file itself, so a
+    /// staleness case fails on staleness rather than on parsing.
+    params: Vec<(&'static str, &'static str, Value)>,
+}
+
+/// Emits every stage's verdict, which is the part the two implementations have
+/// to agree on and the part nothing was watching.
+///
+/// The parsers agreed on `ds.lock` for months while disagreeing about what it
+/// meant: the CLI compared the parameter values the lock records and the server
+/// did not, so retuning a model left the CLI saying stale and the Data tab
+/// saying current about the same commit. Parsing vectors cannot catch that.
+/// These can.
+fn project_staleness(case: Staleness) -> Value {
+    let pipeline = Pipeline::parse(case.pipeline, "ds.yaml").expect("fixture pipeline parses");
+    let lock = Lock::parse(case.lock, "ds.lock").expect("fixture lock parses");
+
+    let git_sha_of = |path: &str| {
+        case.deps
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, sha)| (*sha).to_owned())
+    };
+    let param_of = |file: &str, key: &str| {
+        case.params
+            .iter()
+            .find(|(f, k, _)| *f == file && *k == key)
+            .map(|(_, _, v)| v.clone())
+    };
+    let now = Resolver {
+        git_sha_of: &git_sha_of,
+        param_of: &param_of,
+    };
+
+    let stages: Vec<Value> = pipeline
+        .stages
+        .keys()
+        .map(|name| {
+            let status = graph::status_of(&pipeline, &lock, name, &now);
+            json!({
+                "name": name,
+                "status": status.label(),
+                "reason": status.reason().unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    json!({
+        "name": case.name,
+        "kind": "staleness",
+        "input": case.pipeline,
+        "lock": case.lock,
+        "deps": case.deps.iter().map(|(p, s)| json!({"path": p, "sha": s})).collect::<Vec<_>>(),
+        "params": case.params.iter()
+            .map(|(f, k, v)| json!({"file": f, "key": k, "value": v}))
+            .collect::<Vec<_>>(),
+        "expected": { "stages": stages },
+    })
+}
+
+const TUNED_PIPELINE: &str = "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n";
+
+const TUNED_LOCK: &str = "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n";
+
+fn staleness_cases() -> Vec<Staleness> {
+    vec![
+        Staleness {
+            name: "everything matches",
+            pipeline: TUNED_PIPELINE,
+            lock: TUNED_LOCK,
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(4)),
+                ("params.yaml", "train.seed", json!(42)),
+                ("params.yaml", "report.title", json!("Results")),
+            ],
+        },
+        // The case that was wrong: nothing the stage depends on moved, only a
+        // value inside a file it shares with another stage.
+        Staleness {
+            name: "a parameter changed",
+            pipeline: TUNED_PIPELINE,
+            lock: TUNED_LOCK,
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(8)),
+                ("params.yaml", "train.seed", json!(42)),
+                ("params.yaml", "report.title", json!("Results")),
+            ],
+        },
+        // And the other half of it: the file is shared, so the stage that does
+        // not read the changed key must stay current.
+        Staleness {
+            name: "a sibling's parameter changed",
+            pipeline: TUNED_PIPELINE,
+            lock: TUNED_LOCK,
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(4)),
+                ("params.yaml", "train.seed", json!(42)),
+                ("params.yaml", "report.title", json!("Rewritten")),
+            ],
+        },
+        Staleness {
+            name: "a parameter is gone",
+            pipeline: TUNED_PIPELINE,
+            lock: TUNED_LOCK,
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![
+                ("params.yaml", "train.seed", json!(42)),
+                ("params.yaml", "report.title", json!("Results")),
+            ],
+        },
+        Staleness {
+            name: "a dependency changed",
+            pipeline: TUNED_PIPELINE,
+            lock: TUNED_LOCK,
+            deps: vec![("src/train.py", "bbbb")],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(4)),
+                ("params.yaml", "train.seed", json!(42)),
+                ("params.yaml", "report.title", json!("Results")),
+            ],
+        },
+        Staleness {
+            name: "a dependency is missing",
+            pipeline: TUNED_PIPELINE,
+            lock: TUNED_LOCK,
+            deps: vec![],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(4)),
+                ("params.yaml", "train.seed", json!(42)),
+                ("params.yaml", "report.title", json!("Results")),
+            ],
+        },
+        Staleness {
+            name: "the command changed",
+            pipeline: TUNED_PIPELINE,
+            lock: "schema: 3\nstages:\n  train:\n    cmd: python OLD.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n",
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(4)),
+                ("params.yaml", "train.seed", json!(42)),
+            ],
+        },
+        Staleness {
+            name: "never run",
+            pipeline: TUNED_PIPELINE,
+            lock: "schema: 3\nstages: {}\n",
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![("params.yaml", "train.max_depth", json!(4))],
+        },
+        // A lock that recorded no parameters cannot vouch for the ones the
+        // stage reads now, so each of them is new to it.
+        Staleness {
+            name: "the run recorded no parameters",
+            pipeline: TUNED_PIPELINE,
+            lock: "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    deps:\n      src/train.py: aaaa\n",
+            deps: vec![("src/train.py", "aaaa")],
+            params: vec![
+                ("params.yaml", "train.max_depth", json!(4)),
+                ("params.yaml", "train.seed", json!(42)),
+            ],
+        },
+    ]
 }
 
 /// The part of a parsed pipeline both implementations must read alike.

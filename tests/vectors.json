@@ -609,5 +609,362 @@
     "kind": "lock",
     "input": "stages:\n  a:\n    cmd: run\n",
     "rejected": true
+  },
+  {
+    "name": "everything matches",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      },
+      {
+        "file": "params.yaml",
+        "key": "report.title",
+        "value": "Results"
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "current",
+          "reason": ""
+        },
+        {
+          "name": "report",
+          "status": "current",
+          "reason": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "a parameter changed",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 8
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      },
+      {
+        "file": "params.yaml",
+        "key": "report.title",
+        "value": "Results"
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "stale",
+          "reason": "parameter train.max_depth changed"
+        },
+        {
+          "name": "report",
+          "status": "current",
+          "reason": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "a sibling's parameter changed",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      },
+      {
+        "file": "params.yaml",
+        "key": "report.title",
+        "value": "Rewritten"
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "current",
+          "reason": ""
+        },
+        {
+          "name": "report",
+          "status": "stale",
+          "reason": "parameter report.title changed"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a parameter is gone",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      },
+      {
+        "file": "params.yaml",
+        "key": "report.title",
+        "value": "Results"
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "stale",
+          "reason": "parameter train.max_depth is gone"
+        },
+        {
+          "name": "report",
+          "status": "current",
+          "reason": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency changed",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "bbbb"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      },
+      {
+        "file": "params.yaml",
+        "key": "report.title",
+        "value": "Results"
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "stale",
+          "reason": "src/train.py changed"
+        },
+        {
+          "name": "report",
+          "status": "current",
+          "reason": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency is missing",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n  report:\n    cmd: python report.py\n    params:\n      params.yaml:\n        report.title: Results\n",
+    "deps": [],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      },
+      {
+        "file": "params.yaml",
+        "key": "report.title",
+        "value": "Results"
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "stale",
+          "reason": "missing dependency src/train.py"
+        },
+        {
+          "name": "report",
+          "status": "current",
+          "reason": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "the command changed",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python OLD.py\n    params:\n      params.yaml:\n        train.max_depth: 4\n        train.seed: 42\n    deps:\n      src/train.py: aaaa\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "stale",
+          "reason": "command changed"
+        },
+        {
+          "name": "report",
+          "status": "new",
+          "reason": "never run"
+        }
+      ]
+    }
+  },
+  {
+    "name": "never run",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages: {}\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "new",
+          "reason": "never run"
+        },
+        {
+          "name": "report",
+          "status": "new",
+          "reason": "never run"
+        }
+      ]
+    }
+  },
+  {
+    "name": "the run recorded no parameters",
+    "kind": "staleness",
+    "input": "stages:\n  train:\n    cmd: python train.py\n    deps:\n      - src/train.py\n    params:\n      - params.yaml:\n          - train.max_depth\n          - train.seed\n    outs:\n      - models/model.pkl\n  report:\n    cmd: python report.py\n    params:\n      - params.yaml:\n          - report.title\n",
+    "lock": "schema: 3\nstages:\n  train:\n    cmd: python train.py\n    deps:\n      src/train.py: aaaa\n",
+    "deps": [
+      {
+        "path": "src/train.py",
+        "sha": "aaaa"
+      }
+    ],
+    "params": [
+      {
+        "file": "params.yaml",
+        "key": "train.max_depth",
+        "value": 4
+      },
+      {
+        "file": "params.yaml",
+        "key": "train.seed",
+        "value": 42
+      }
+    ],
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "status": "stale",
+          "reason": "new parameter params.yaml:train.max_depth"
+        },
+        {
+          "name": "report",
+          "status": "new",
+          "reason": "never run"
+        }
+      ]
+    }
   }
 ]
