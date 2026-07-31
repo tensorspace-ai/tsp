@@ -5,6 +5,9 @@ members = ["crates/tsp-core", "crates/tsp-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The floor edition 2024 itself requires. Whether a dependency raises it is what
+# the CI job exists to find out; it has never been checked on a real 1.85.
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/tensorspace-ai/tsp"
 
