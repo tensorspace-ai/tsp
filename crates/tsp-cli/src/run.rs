@@ -103,7 +103,36 @@ fn execute(repo: &Repo, name: &str) -> Result<()> {
             );
         }
     }
-    Ok(())
+
+    require_declared_outputs(repo, name, stage)
+}
+
+/// Refuses a stage that exited 0 without writing what it said it would.
+///
+/// The lock records only outputs that exist, so a missing one used to leave an
+/// entry tracking nothing and a stage reported current forever after. A command
+/// that succeeds while its declared artifact is absent has not done its job,
+/// whatever its exit code claims.
+fn require_declared_outputs(
+    repo: &Repo,
+    name: &str,
+    stage: &tsp_core::pipeline::Stage,
+) -> Result<()> {
+    let missing: Vec<&str> = stage
+        .out_paths()
+        .into_iter()
+        .filter(|path| !repo.root().join(path).exists())
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "stage {name} exited 0 but did not write: {}. \
+         Either the command does not produce what the pipeline declares, or the path \
+         is spelled differently there than on disk.",
+        missing.join(", ")
+    )
 }
 
 #[cfg(unix)]

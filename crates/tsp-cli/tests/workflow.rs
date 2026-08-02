@@ -438,6 +438,29 @@ fn a_failing_stage_stops_the_run() {
     );
 }
 
+/// A command that exits 0 without writing its output used to leave a lock entry
+/// tracking nothing, and the stage read as current from then on.
+#[test]
+fn a_stage_that_skips_its_declared_output_stops_the_run() {
+    let f = Fixture::new();
+    f.write_exec("scripts/train.sh", "#!/bin/sh\nexit 0\n");
+
+    let out = f.tsp(&["repro"]);
+    assert!(!out.status.success(), "a missing output must fail the run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("train"), "names the stage: {stderr}");
+    assert!(
+        stderr.contains("models/model.txt"),
+        "names the missing path: {stderr}"
+    );
+
+    let status = f.tsp_ok(&["status"]);
+    assert!(
+        !status.contains("current"),
+        "the stage must not read as current: {status}"
+    );
+}
+
 #[test]
 fn metrics_are_listed_and_compared() {
     let f = Fixture::new();

@@ -45,6 +45,8 @@ pub enum PipelineError {
         key: String,
         hint: String,
     },
+    #[error("{path}: stage {name:?} has no cmd, so there is nothing to bring up to date")]
+    NoCommand { path: String, name: String },
 }
 
 type Result<T> = std::result::Result<T, PipelineError>;
@@ -227,6 +229,18 @@ impl Pipeline {
                 path: origin.to_owned(),
                 found: pipeline.schema,
             });
+        }
+        // A stage with no command runs nothing, and the staleness check skips
+        // the command comparison when there is none to make — so it would go
+        // straight to current and stay there. Refusing it here is what keeps
+        // "current" meaning "the recorded result still holds".
+        for (name, stage) in &pipeline.stages {
+            if stage.cmd.is_empty() {
+                return Err(PipelineError::NoCommand {
+                    path: origin.to_owned(),
+                    name: name.clone(),
+                });
+            }
         }
         Ok(pipeline)
     }
@@ -651,6 +665,14 @@ stages:
         let text = err.to_string();
         assert!(text.contains("stagez"), "{text}");
         assert!(text.contains("stages"), "lists the known keys: {text}");
+    }
+
+    #[test]
+    fn a_stage_with_no_command_is_refused() {
+        let err = Pipeline::parse("stages:\n  a:\n    outs: [m.bin]\n", "tsp.yaml").unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains('a'), "{text}");
+        assert!(text.contains("cmd"), "{text}");
     }
 
     #[test]
