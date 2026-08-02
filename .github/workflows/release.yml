@@ -134,9 +134,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo publish --locked -p tsp-core
+      # Skips a version already on the registry, so re-running a release after
+      # fixing one platform's binary does not fail on the publish that already
+      # succeeded. A version can never be replaced, only skipped.
+      - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - run: cargo publish --locked -p tsp-cli
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          for crate in tsp-core tsp-cli; do
+            if curl -sf -A "tsp-release" "https://crates.io/api/v1/crates/$crate/$VERSION" > /dev/null; then
+              echo "$crate $VERSION is already published; skipping"
+            else
+              cargo publish --locked -p "$crate"
+            fi
+          done
