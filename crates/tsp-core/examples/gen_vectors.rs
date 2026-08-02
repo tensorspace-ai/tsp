@@ -424,6 +424,12 @@ fn pipeline_cases() -> Vec<(&'static str, &'static str)> {
             "stages:\n  eval:\n    cmd: run\n    plots:\n      - m.json:\n          template: confusionn\n",
         ),
         ("stages is not a map", "stages:\n  - a\n"),
+        // Not a rule either side chose — the YAML parser refuses this before
+        // any rule applies — but worth pinning all the same. A reader that
+        // recovered from a broken document would render whichever half it
+        // managed to read, and half a pipeline is a wrong DAG rather than a
+        // missing one.
+        ("not valid yaml", "stages: [unclosed\n  train: : :\n"),
     ]
 }
 

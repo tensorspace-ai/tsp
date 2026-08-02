@@ -565,6 +565,12 @@
     "rejected": true
   },
   {
+    "name": "not valid yaml",
+    "kind": "pipeline",
+    "input": "stages: [unclosed\n  train: : :\n",
+    "rejected": true
+  },
+  {
     "name": "empty lock",
     "kind": "lock",
     "input": "schema: 3\nstages: {}\n",
