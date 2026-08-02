@@ -537,6 +537,14 @@ fn the_plots_page_is_generated_and_stays_out_of_git() {
         !tracked.contains("index.html"),
         "the page must not be staged: {tracked}"
     );
+
+    // Nor should the directory show up as untracked: an ignore file that does
+    // not ignore itself just swaps one stray path for another.
+    let dirty = f.git(&["status", "--short"]);
+    assert!(
+        !dirty.contains("tsp_plots"),
+        "the directory should leave no trace: {dirty}"
+    );
 }
 
 /// Reading a file at a revision cannot tell a missing file from a missing

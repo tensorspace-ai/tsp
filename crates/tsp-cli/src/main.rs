@@ -282,8 +282,9 @@ fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> 
         return Ok(());
     }
     println!(
-        "\nRan {} stage(s); {} updated and staged.",
+        "\nRan {} {}; {} updated and staged.",
         ran.len(),
+        plural(ran.len(), "stage", "stages"),
         tsp_core::lock::FILE_NAME
     );
     println!("Commit the result with `git commit`; `git push` uploads the data.");

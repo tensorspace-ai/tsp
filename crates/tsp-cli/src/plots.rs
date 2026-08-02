@@ -18,8 +18,11 @@ pub const OUT_DIR: &str = "tsp_plots";
 /// It goes beside the page rather than into the repository's own `.gitignore`
 /// because `--out` can point anywhere, and an entry naming one directory would
 /// not cover the next.
-const IGNORE: &str =
-    "# Written by `tsp plots`. The page is generated; regenerate it instead.\n/index.html\n";
+///
+/// The `*` covers this file too, which is the point: the directory then leaves
+/// no trace in `git status` at all, rather than trading an untracked page for
+/// an untracked ignore file.
+const IGNORE: &str = "# Written by `tsp plots`. The page is generated; regenerate it instead.\n*\n";
 
 /// The name for data read from the working tree rather than a commit.
 pub const WORKSPACE: &str = "workspace";
