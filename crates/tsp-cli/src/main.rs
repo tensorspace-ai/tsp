@@ -135,7 +135,7 @@ fn main() -> Result<()> {
 /// git-lfs properly: install its filters, then record the patterns that decide
 /// what counts as data.
 fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
-    let git = Git::discover(cwd).context("not inside a git repository")?;
+    let git = Git::discover(cwd)?;
 
     git.lfs_install()
         .context("running `git lfs install` — is git-lfs installed?")?;

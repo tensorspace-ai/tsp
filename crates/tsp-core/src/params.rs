@@ -11,13 +11,13 @@ use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParamsError {
-    #[error("cannot read {path}: {source}")]
+    #[error("cannot read {path}")]
     Read {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("cannot parse {path}: {source}")]
+    #[error("cannot parse {path}")]
     Parse {
         path: String,
         #[source]

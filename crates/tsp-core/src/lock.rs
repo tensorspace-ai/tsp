@@ -32,13 +32,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
-    #[error("cannot read {path}: {source}")]
+    #[error("cannot read {path}")]
     Read {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("cannot parse {path}: {source}")]
+    #[error("cannot parse {path}")]
     Parse {
         path: String,
         #[source]

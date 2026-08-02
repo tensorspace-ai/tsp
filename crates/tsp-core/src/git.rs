@@ -17,7 +17,7 @@ use std::process::{Command, Output, Stdio};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
-    #[error("failed to run `git {args}`: {source}")]
+    #[error("failed to run `git {args}`")]
     Spawn {
         args: String,
         #[source]
@@ -29,7 +29,7 @@ pub enum GitError {
         status: i32,
         stderr: String,
     },
-    #[error("not inside a git repository")]
+    #[error("not inside a git repository; run `git init` here, or cd into one")]
     NotARepository,
     #[error("`git {args}` produced output that could not be parsed: {detail}")]
     Unparseable { args: String, detail: String },
@@ -101,10 +101,17 @@ impl Git {
     /// Locates the repository containing `start`.
     pub fn discover(start: impl AsRef<Path>) -> Result<Self> {
         let start = start.as_ref();
+        // git's own "fatal: not a git repository" arrives as a failed command.
+        // Passing it through would answer a plain question with the plumbing
+        // that asked it, so the one case worth naming is named here.
         let out = run_in(
             start,
             ["rev-parse", "--show-toplevel", "--absolute-git-dir"],
-        )?;
+        )
+        .map_err(|err| match err {
+            GitError::Failed { .. } => GitError::NotARepository,
+            other => other,
+        })?;
         let text = String::from_utf8_lossy(&out.stdout);
         let mut lines = text.lines();
         let (Some(work_tree), Some(git_dir)) = (lines.next(), lines.next()) else {

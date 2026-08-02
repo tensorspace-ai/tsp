@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use tsp_core::git::Git;
 use tsp_core::graph::{self, Resolver, Status};
 use tsp_core::lock::{Lock, LockStage};
@@ -27,7 +27,7 @@ pub struct Repo {
 impl Repo {
     /// Opens the repository containing `start`, requiring a pipeline.
     pub fn open(start: &Path) -> Result<Self> {
-        let git = Git::discover(start).context("not inside a git repository")?;
+        let git = Git::discover(start)?;
         let root = git.work_tree().to_path_buf();
 
         let Some((pipeline_file, pipeline)) = Pipeline::find(&root)? else {

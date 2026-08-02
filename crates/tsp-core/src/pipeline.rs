@@ -20,13 +20,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
-    #[error("cannot read {path}: {source}")]
+    // The source is reported by the error chain, so interpolating it here too
+    // would print the same sentence twice.
+    #[error("cannot read {path}")]
     Read {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("cannot parse {path}: {source}")]
+    #[error("cannot parse {path}")]
     Parse {
         path: String,
         #[source]
@@ -47,6 +49,13 @@ pub enum PipelineError {
     },
     #[error("{path}: stage {name:?} has no cmd, so there is nothing to bring up to date")]
     NoCommand { path: String, name: String },
+    #[error("{path}: {location} should be {want}, but is {got}")]
+    WrongShape {
+        path: String,
+        location: String,
+        want: String,
+        got: String,
+    },
 }
 
 type Result<T> = std::result::Result<T, PipelineError>;
@@ -98,13 +107,17 @@ fn dvc_hint(key: &str) -> Option<&'static str> {
     }
 }
 
-/// Rejects keys this version does not define, before the typed parse.
+/// Checks the file's shape and keys before the typed parse.
 ///
 /// A generic pass first is what lets the message name the key *and* the stage
 /// it sits in. It matters most for the keys that are neither typos nor
 /// supported: silently dropping `foreach` produces a DAG that runs nothing and
 /// reports success, which is the one answer this tool must never give.
-fn reject_unknown_keys(text: &str, path: &str) -> Result<()> {
+///
+/// It also keeps serde's vocabulary out of the reader's way. A YAML author who
+/// wrote a string where a stage goes is told exactly that, rather than being
+/// told they expected a `struct Stage`.
+fn check_shape(text: &str, path: &str) -> Result<()> {
     // A syntax error is the typed parse's to report, with its line and column.
     let Ok(root) = yaml_serde::from_str::<serde_json::Value>(text) else {
         return Ok(());
@@ -121,17 +134,40 @@ fn reject_unknown_keys(text: &str, path: &str) -> Result<()> {
             None => format!("; known keys are {}", known.join(", ")),
         },
     };
+    let wrong = |location: &str, want: &str, got: &serde_json::Value| PipelineError::WrongShape {
+        path: path.to_owned(),
+        location: location.to_owned(),
+        want: want.to_owned(),
+        got: describe(got),
+    };
+
     for key in top.keys() {
         if !PIPELINE_KEYS.contains(&key.as_str()) {
             return Err(unknown("the pipeline".to_owned(), key, &PIPELINE_KEYS));
         }
     }
-    let Some(stages) = top.get("stages").and_then(serde_json::Value::as_object) else {
+    if let Some(plots) = top.get("plots")
+        && !plots.is_array()
+    {
+        return Err(wrong(
+            "plots",
+            "a list of files, or of single-key entries carrying options",
+            plots,
+        ));
+    }
+    let Some(stages) = top.get("stages") else {
         return Ok(());
+    };
+    let Some(stages) = stages.as_object() else {
+        return Err(wrong("stages", "a map of stage name to stage", stages));
     };
     for (name, stage) in stages {
         let Some(stage) = stage.as_object() else {
-            continue;
+            return Err(wrong(
+                &format!("stage {name:?}"),
+                "a map of keys like cmd, deps and outs",
+                stage,
+            ));
         };
         for key in stage.keys() {
             if !STAGE_KEYS.contains(&key.as_str()) {
@@ -140,6 +176,18 @@ fn reject_unknown_keys(text: &str, path: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Names a YAML value's shape the way the file's author would.
+fn describe(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "nothing".to_owned(),
+        serde_json::Value::Bool(_) => "a true/false value".to_owned(),
+        serde_json::Value::Number(_) => "a number".to_owned(),
+        serde_json::Value::String(s) => format!("the text {s:?}"),
+        serde_json::Value::Array(_) => "a list".to_owned(),
+        serde_json::Value::Object(_) => "a map".to_owned(),
+    }
 }
 
 /// A parsed pipeline.
@@ -215,7 +263,7 @@ impl Pipeline {
     }
 
     pub fn parse(text: &str, origin: &str) -> Result<Self> {
-        reject_unknown_keys(text, origin)?;
+        check_shape(text, origin)?;
         let pipeline: Self = yaml_serde::from_str(text).map_err(|source| PipelineError::Parse {
             path: origin.to_owned(),
             source,
@@ -673,6 +721,22 @@ stages:
         let text = err.to_string();
         assert!(text.contains('a'), "{text}");
         assert!(text.contains("cmd"), "{text}");
+    }
+
+    /// serde would call this "expected struct Stage", which names a Rust type
+    /// to someone who is writing YAML.
+    #[test]
+    fn a_value_of_the_wrong_shape_is_described_in_the_files_own_terms() {
+        for (yaml, expect) in [
+            ("stages:\n  - a\n", "a list"),
+            ("stages:\n  a: hello\n", "the text \"hello\""),
+            ("stages:\n  a:\n    cmd: x\nplots:\n  f.csv: {}\n", "a map"),
+        ] {
+            let err = Pipeline::parse(yaml, "tsp.yaml").unwrap_err();
+            let text = err.to_string();
+            assert!(text.contains(expect), "{text}");
+            assert!(!text.contains("struct"), "no Rust types: {text}");
+        }
     }
 
     #[test]
