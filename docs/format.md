@@ -13,6 +13,10 @@ contract rather than one program's behaviour.
 - [Metric direction](#metric-direction)
 - [What is not supported](#what-is-not-supported)
 
+The CLI's `--json` output is a separate contract with the opposite rule for
+unknown fields, and the second implementation takes no part in it. It is
+documented in [json.md](json.md).
+
 A key this version does not define is an error, not something skipped. That is
 deliberate: a misspelled `outs:` would otherwise read as "this stage writes
 nothing", and the stage would report itself up to date forever.

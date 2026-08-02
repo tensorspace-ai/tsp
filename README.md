@@ -129,6 +129,7 @@ Staleness is per key, not per file, so the other two models stay current.
 | `tsp repro [stage] [--force]` | Run the stages that are out of date and update the lock |
 | `tsp status` | Show which stages are current, stale, new or unknown, and why |
 | `tsp metrics [--compare <rev>]` | Show metric values, optionally against another revision |
+| `tsp params [--compare <rev>]` | Show the parameter values stages declare, optionally against another revision |
 | `tsp plots [revisions...] [--out <dir>]` | Render the pipeline's plots to a self-contained HTML page |
 | `tsp exp run --set k=v [--name <name>] [--force]` | Run with parameters overridden and record the result |
 | `tsp exp list \| show \| apply \| remove` | Work with recorded experiments |
@@ -136,6 +137,21 @@ Staleness is per key, not per file, so the other two models stay current.
 
 `tsp plots` writes to `tsp_plots/`, and drops a `.gitignore` beside the page so
 the generated HTML stays out of history.
+
+### Machine-readable output
+
+`status`, `metrics`, `params`, `exp list` and `exp show` take `--json` and write
+a document instead of a table, so a verdict can be read in CI without parsing
+one:
+
+```sh
+$ tsp status --json | jq .summary.needs_run
+2
+```
+
+stdout carries the document and nothing else — notes and warnings go to stderr —
+and an empty result is an empty document rather than a sentence. The shapes and
+the rule for changing them are in [docs/json.md](docs/json.md).
 
 ## Experiments are commits
 

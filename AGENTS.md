@@ -38,6 +38,10 @@ why. Do not delete, skip or weaken a test to make a change pass.
   must be *told* so rather than left to work it out.
 - **A file from a newer schema is refused whole**, never parsed for the parts we
   recognise. That is what makes adding a field safe for older versions.
+- **Machine-readable output is a contract.** `--json` documents carry `schema`.
+  Adding a field is safe; changing, retyping or removing one is a bump. Human
+  text never moves onto stdout in JSON mode, and an empty result is an empty
+  document rather than a sentence. See [docs/json.md](docs/json.md).
 
 ## The formats are a contract
 

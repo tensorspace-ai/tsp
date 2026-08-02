@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `tsp params [--compare <rev>]`, mirroring `tsp metrics`. It shows the keys
+  stages declare under `params:` and nothing else, because those are the ones
+  staleness is decided from — a listing that showed more would disagree with
+  `tsp status` about what matters. A parameter change is never called better or
+  worse: a parameter is a setting rather than a result.
+- `--json` on `status`, `metrics`, `params`, `exp list` and `exp show`, so a
+  pipeline can read a verdict without parsing a table. Documented in
+  [`docs/json.md`](docs/json.md), with a `schema:` and the rule that adding a
+  field is safe and changing one is a bump.
+
+### Changed
+
+- A repository holding a `dvc.lock` and no `tsp.lock` is now told why every
+  stage reports `new`, on `status` and before `repro` runs anything. `dvc.lock`
+  is still not read — DVC records content hashes and this records git object
+  ids, and deriving one from the other would mean reading the data — but that
+  was previously something the reader had to deduce from a screen of `new`. The
+  file itself is left untouched.
+
+### Fixed
+
+- `tsp exp list` resolved every experiment's metrics twice, spawning git once
+  per metrics file per experiment for a result it then discarded.
+
 ## [0.1.0] — 2026-08-02
 
 First public release.
