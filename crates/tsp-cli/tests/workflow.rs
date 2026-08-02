@@ -461,6 +461,35 @@ fn a_stage_that_skips_its_declared_output_stops_the_run() {
     );
 }
 
+/// The README's own quickstart ends in `git add -A`, so a generated page that
+/// is not ignored lands in history the first time anyone follows it.
+#[test]
+fn the_plots_page_is_generated_and_stays_out_of_git() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.write("tsp.yaml", &format!("{PIPELINE}plots:\n  - metrics.json\n"));
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    let out = f.tsp_ok(&["plots"]);
+    assert!(out.contains("tsp_plots"), "writes under tsp_plots: {out}");
+
+    f.git(&["add", "-A"]);
+    let tracked = String::from_utf8(
+        Command::new("git")
+            .current_dir(&f.root)
+            .args(["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        !tracked.contains("index.html"),
+        "the page must not be staged: {tracked}"
+    );
+}
+
 /// Reading a file at a revision cannot tell a missing file from a missing
 /// revision, so a typo used to render as a plausible, empty comparison.
 #[test]

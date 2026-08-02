@@ -10,9 +10,16 @@ use tsp_core::svg;
 
 use crate::repo::Repo;
 
-/// Where `tsp plots` writes, matching DVC's default so the directory is already
-/// in people's ignore files.
-pub const OUT_DIR: &str = "ds_plots";
+/// Where `tsp plots` writes.
+pub const OUT_DIR: &str = "tsp_plots";
+
+/// Written into the output directory so the generated page stays out of git.
+///
+/// It goes beside the page rather than into the repository's own `.gitignore`
+/// because `--out` can point anywhere, and an entry naming one directory would
+/// not cover the next.
+const IGNORE: &str =
+    "# Written by `tsp plots`. The page is generated; regenerate it instead.\n/index.html\n";
 
 /// The name for data read from the working tree rather than a commit.
 pub const WORKSPACE: &str = "workspace";
@@ -96,14 +103,42 @@ pub fn write_page(
     figures: &[figure::Rendered],
     out: &str,
 ) -> Result<std::path::PathBuf> {
-    let dir = repo.root().join(out);
+    let dir = out_dir(repo.root(), out)?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+
+    // Rewritten every time: a user who deleted it wants the page tracked, and
+    // will delete it again. Writing it once on creation would instead depend on
+    // whether the directory happened to exist.
+    let ignore = dir.join(".gitignore");
+    std::fs::write(&ignore, IGNORE).with_context(|| format!("writing {}", ignore.display()))?;
 
     let rendered: Vec<String> = figures.iter().map(svg::render).collect();
     let path = dir.join("index.html");
     std::fs::write(&path, svg::page("tsp plots", &rendered))
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
+}
+
+/// Resolves `--out` against the repository, refusing anything that leaves it.
+///
+/// A generated page is repository content, and a command that writes outside
+/// the tree on the strength of a flag is the "escaping the repository" case
+/// SECURITY.md puts in scope.
+fn out_dir(root: &std::path::Path, out: &str) -> Result<std::path::PathBuf> {
+    if out.is_empty() {
+        anyhow::bail!("--out needs a directory name");
+    }
+    let candidate = std::path::Path::new(out);
+    if candidate.is_absolute() {
+        anyhow::bail!("--out must be inside the repository, and {out:?} is an absolute path");
+    }
+    if candidate
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("--out must be inside the repository, and {out:?} climbs out of it");
+    }
+    Ok(root.join(candidate))
 }
 
 /// The revisions to compare, following DVC: with none given, the working tree
@@ -138,5 +173,20 @@ mod tests {
     #[test]
     fn the_workspace_is_not_added_twice() {
         assert_eq!(revisions(&["workspace".to_owned()]), ["workspace"]);
+    }
+
+    #[test]
+    fn the_output_directory_must_stay_inside_the_repository() {
+        let root = std::path::Path::new("/repo");
+        for bad in ["", "/tmp/escape", "../escape", "a/../../escape"] {
+            assert!(
+                out_dir(root, bad).is_err(),
+                "{bad:?} should be refused as --out"
+            );
+        }
+        assert_eq!(
+            out_dir(root, "tsp_plots").unwrap(),
+            std::path::Path::new("/repo/tsp_plots")
+        );
     }
 }
