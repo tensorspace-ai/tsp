@@ -32,8 +32,27 @@ impl Experiment {
 }
 
 /// Runs the pipeline with `overrides` applied and records the result.
-pub fn run(repo: &mut Repo, overrides: &[Override], name: Option<&str>) -> Result<Experiment> {
+pub fn run(
+    repo: &mut Repo,
+    overrides: &[Override],
+    name: Option<&str>,
+    force: bool,
+) -> Result<Experiment> {
     repo.require_clean_tree()?;
+
+    // Before the pipeline runs, not after: a name is rejected on its spelling
+    // alone, and finding that out at the end costs the whole run. On a real
+    // pipeline that is hours of compute thrown away over a space in a flag.
+    if let Some(given) = name {
+        validate_name(given)?;
+        if !force && list(repo)?.iter().any(|e| e.name == given) {
+            bail!(
+                "an experiment named {given:?} already exists. Recording over it would leave \
+                 its commit unreachable; pass --force to replace it, or `tsp exp remove {given}` \
+                 first."
+            );
+        }
+    }
 
     let head = repo
         .git()

@@ -461,6 +461,42 @@ fn a_stage_that_skips_its_declared_output_stops_the_run() {
     );
 }
 
+/// A name is refused on its spelling alone, so checking it after the run costs
+/// the whole run to learn something knowable before it started.
+#[test]
+fn a_bad_experiment_name_is_refused_before_anything_runs() {
+    let f = Fixture::new();
+
+    let out = f.tsp(&["exp", "run", "--set", "train.factor=9", "--name", "my exp"]);
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("==> train"),
+        "the pipeline must not have run: {stdout}"
+    );
+}
+
+#[test]
+fn an_experiment_name_is_not_reused_without_force() {
+    let f = Fixture::new();
+    f.tsp_ok(&["exp", "run", "--set", "train.factor=9", "--name", "tuned"]);
+
+    let out = f.tsp(&["exp", "run", "--set", "train.factor=11", "--name", "tuned"]);
+    assert!(!out.status.success(), "a reused name must be refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--force"), "{stderr}");
+
+    f.tsp_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=11",
+        "--name",
+        "tuned",
+        "--force",
+    ]);
+}
+
 /// The README's own quickstart ends in `git add -A`, so a generated page that
 /// is not ignored lands in history the first time anyone follows it.
 #[test]

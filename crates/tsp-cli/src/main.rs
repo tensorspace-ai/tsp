@@ -83,17 +83,27 @@ enum ExpCommand {
         #[arg(long = "set", value_name = "KEY=VALUE")]
         set: Vec<String>,
         /// Name for the experiment; one is derived from the commit otherwise
-        #[arg(long)]
+        #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Replace an experiment of the same name
+        #[arg(long)]
+        force: bool,
     },
     /// List recorded experiments and their metrics
     List,
     /// Show one experiment in detail
-    Show { name: String },
+    Show {
+        /// Experiment to show, as listed by `tsp exp list`
+        name: String,
+    },
     /// Bring an experiment's parameters and outputs into the working tree
-    Apply { name: String },
+    Apply {
+        /// Experiment to apply, as listed by `tsp exp list`
+        name: String,
+    },
     /// Delete experiments
     Remove {
+        /// Experiments to delete, as listed by `tsp exp list`
         #[arg(required = true)]
         names: Vec<String>,
     },
@@ -110,7 +120,7 @@ fn main() -> Result<()> {
         Command::Metrics { compare } => show_metrics(&cwd, compare.as_deref()),
         Command::Plots { revisions, out } => show_plots(&cwd, &revisions, &out),
         Command::Exp(args) => match args.command {
-            ExpCommand::Run { set, name } => exp_run(&cwd, &set, name.as_deref()),
+            ExpCommand::Run { set, name, force } => exp_run(&cwd, &set, name.as_deref(), force),
             ExpCommand::List => exp_list(&cwd),
             ExpCommand::Show { name } => exp_show(&cwd, &name),
             ExpCommand::Apply { name } => exp_apply(&cwd, &name),
@@ -329,14 +339,14 @@ fn show_plots(cwd: &std::path::Path, revisions: &[String], out: &str) -> Result<
     Ok(())
 }
 
-fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>) -> Result<()> {
+fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>, force: bool) -> Result<()> {
     let overrides: Vec<Override> = set
         .iter()
         .map(|s| s.parse())
         .collect::<std::result::Result<_, _>>()?;
 
     let mut repo = Repo::open(cwd)?;
-    let experiment = exp::run(&mut repo, &overrides, name)?;
+    let experiment = exp::run(&mut repo, &overrides, name, force)?;
 
     println!(
         "\nRecorded {} ({})",
