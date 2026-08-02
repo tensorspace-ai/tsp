@@ -5,9 +5,10 @@ members = ["crates/tsp-core", "crates/tsp-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# The floor edition 2024 itself requires. Whether a dependency raises it is what
-# the CI job exists to find out; it has never been checked on a real 1.85.
-rust-version = "1.85"
+# 1.85 is the floor edition 2024 requires, and this said 1.85 for a long time
+# without ever being run against it. The first real 1.85 build found the answer:
+# `graph.rs`, `plotdata.rs` and `repo.rs` use let-chains, stable since 1.88.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/tensorspace-ai/tsp"
 homepage = "https://github.com/tensorspace-ai/tsp"

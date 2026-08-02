@@ -55,7 +55,7 @@ unrelated crate last published in 2017.
 
 Prebuilt binaries for macOS, Linux and Windows are attached to each
 [release](https://github.com/tensorspace-ai/tsp/releases). Building from source
-needs Rust 1.85 or newer.
+needs Rust 1.88 or newer.
 
 ```sh
 tsp --version
