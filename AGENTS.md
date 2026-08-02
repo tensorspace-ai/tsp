@@ -30,9 +30,13 @@ why. Do not delete, skip or weaken a test to make a change pass.
   file; one stage's retune must not stale its siblings.
 - **This tool does not move bytes.** No cache, no remote, no transfer command.
   Git LFS does that job for every git client rather than only for this one.
-- **`dvc.yaml` is read as-is.** That is how an existing DVC repository renders
-  without being migrated first, and it is a feature rather than a legacy. It
-  stops at the pipeline: `dvc.lock` records content hashes, and reading them to
+- **`dvc.yaml` is read as-is**, templating included: `vars`, `${...}`, `foreach`
+  and `matrix` expand, with DVC's generated names. That is how an existing DVC
+  repository renders without being migrated first, and it is a feature rather
+  than a legacy. Expansion happens before the typed parse, which is what keeps
+  the lock, the graph and the second implementation unaware that templating
+  exists — and what makes a variable a tracked input rather than a hidden one.
+  It stops at the pipeline: `dvc.lock` records content hashes, and reading them to
   decide staleness is the content hashing the invariant above forbids. A DVC
   repository therefore reports every stage new until its first `tsp repro`, and
   must be *told* so rather than left to work it out.

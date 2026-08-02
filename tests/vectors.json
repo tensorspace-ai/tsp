@@ -520,19 +520,99 @@
     "name": "dvc foreach",
     "kind": "pipeline",
     "input": "stages:\n  train:\n    foreach: [a, b]\n    do:\n      cmd: train ${item}\n",
-    "rejected": true
+    "expected": {
+      "stages": [
+        {
+          "name": "train@a",
+          "stage": {
+            "cmd": "train a",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "train@b",
+          "stage": {
+            "cmd": "train b",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
   },
   {
     "name": "dvc matrix",
     "kind": "pipeline",
-    "input": "stages:\n  train:\n    matrix:\n      model: [logreg, forest]\n    do:\n      cmd: train ${item.model}\n",
-    "rejected": true
+    "input": "stages:\n  train:\n    matrix:\n      model: [logreg, forest]\n    cmd: train ${item.model}\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "train@logreg",
+          "stage": {
+            "cmd": "train logreg",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "train@forest",
+          "stage": {
+            "cmd": "train forest",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
   },
   {
     "name": "dvc vars",
     "kind": "pipeline",
-    "input": "vars:\n  - params.yaml\nstages:\n  a:\n    cmd: run\n",
-    "rejected": true
+    "input": "vars:\n  - params.yaml\nstages:\n  a:\n    cmd: run ${train.depth}\n",
+    "files": {
+      "params.yaml": "train:\n  depth: 4\n"
+    },
+    "expected": {
+      "stages": [
+        {
+          "name": "a",
+          "stage": {
+            "cmd": "run 4",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
   },
   {
     "name": "unknown stage key",
@@ -568,6 +648,288 @@
     "name": "not valid yaml",
     "kind": "pipeline",
     "input": "stages: [unclosed\n  train: : :\n",
+    "rejected": true
+  },
+  {
+    "name": "interpolation from params.yaml",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    cmd: run --depth ${train.depth}\n    deps:\n      - \"${data.root}/raw.csv\"\n",
+    "files": {
+      "params.yaml": "train:\n  depth: 4\ndata:\n  root: data\n"
+    },
+    "expected": {
+      "stages": [
+        {
+          "name": "train",
+          "stage": {
+            "cmd": "run --depth 4",
+            "wdir": "",
+            "deps": [
+              "data/raw.csv"
+            ],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "foreach over a mapping",
+    "kind": "pipeline",
+    "input": "stages:\n  build:\n    foreach:\n      uk:\n        level: 1\n      us:\n        level: 2\n    do:\n      cmd: build ${key} ${item.level}\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "build@uk",
+          "stage": {
+            "cmd": "build uk 1",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "build@us",
+          "stage": {
+            "cmd": "build us 2",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "foreach naming a variable",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    foreach: ${models}\n    do:\n      cmd: train ${item}\n",
+    "files": {
+      "params.yaml": "models: [cnn, rnn]\n"
+    },
+    "expected": {
+      "stages": [
+        {
+          "name": "train@cnn",
+          "stage": {
+            "cmd": "train cnn",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "train@rnn",
+          "stage": {
+            "cmd": "train rnn",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "foreach substitutes outs and deps",
+    "kind": "pipeline",
+    "input": "stages:\n  build:\n    foreach: [us, eu]\n    do:\n      cmd: build ${item}\n      deps:\n        - \"src/${item}.py\"\n      outs:\n        - \"out/${item}.bin\"\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "build@us",
+          "stage": {
+            "cmd": "build us",
+            "wdir": "",
+            "deps": [
+              "src/us.py"
+            ],
+            "outs": [
+              {
+                "path": "out/us.bin",
+                "cache": true,
+                "persist": false
+              }
+            ],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "build@eu",
+          "stage": {
+            "cmd": "build eu",
+            "wdir": "",
+            "deps": [
+              "src/eu.py"
+            ],
+            "outs": [
+              {
+                "path": "out/eu.bin",
+                "cache": true,
+                "persist": false
+              }
+            ],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "matrix cross product",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    matrix:\n      model: [cnn, rnn]\n      seed: [1, 2]\n    cmd: run ${item.model} ${item.seed}\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "t@cnn-1",
+          "stage": {
+            "cmd": "run cnn 1",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "t@cnn-2",
+          "stage": {
+            "cmd": "run cnn 2",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "t@rnn-1",
+          "stage": {
+            "cmd": "run rnn 1",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        },
+        {
+          "name": "t@rnn-2",
+          "stage": {
+            "cmd": "run rnn 2",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "an escaped reference is literal",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    cmd: echo \\${HOME}\n",
+    "expected": {
+      "stages": [
+        {
+          "name": "t",
+          "stage": {
+            "cmd": "echo ${HOME}",
+            "wdir": "",
+            "deps": [],
+            "outs": [],
+            "metrics": [],
+            "plots": [],
+            "params": [],
+            "desc": ""
+          }
+        }
+      ],
+      "plots": []
+    }
+  },
+  {
+    "name": "an unknown variable",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    cmd: run ${nope.here}\n",
+    "rejected": true
+  },
+  {
+    "name": "foreach without do",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    foreach: [a, b]\n",
+    "rejected": true
+  },
+  {
+    "name": "foreach over a scalar",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    foreach: 3\n    do:\n      cmd: run\n",
+    "rejected": true
+  },
+  {
+    "name": "a stray key beside foreach",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    foreach: [a]\n    cmd: x\n    do:\n      cmd: y\n",
+    "rejected": true
+  },
+  {
+    "name": "a misspelled key inside do",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    foreach: [a]\n    do:\n      cmd: x\n      outz:\n        - m.bin\n",
+    "rejected": true
+  },
+  {
+    "name": "two foreach items generating one name",
+    "kind": "pipeline",
+    "input": "stages:\n  t:\n    foreach: [a, a]\n    do:\n      cmd: run ${item}\n",
+    "rejected": true
+  },
+  {
+    "name": "a vars file that is missing",
+    "kind": "pipeline",
+    "input": "vars:\n  - absent.yaml\nstages:\n  t:\n    cmd: run\n",
     "rejected": true
   },
   {

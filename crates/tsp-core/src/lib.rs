@@ -11,6 +11,7 @@
 //! which parses both to render the DAG. They stay compatible with DVC's
 //! `dvc.yaml`/`dvc.lock` so existing repositories work unchanged.
 
+pub mod expand;
 pub mod figure;
 pub mod git;
 pub mod graph;

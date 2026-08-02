@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Templated stages.** `vars`, `${...}` interpolation, `foreach` with `do`, and
+  `matrix` cross-products are expanded rather than refused, and `params.yaml` is
+  in scope without being named — DVC's behaviour, so an existing `dvc.yaml`
+  renders without being migrated. Generated stages take DVC's names
+  (`train@cnn-mnist`), which is the name that reaches `tsp.lock`.
+
+  Expansion runs before the pipeline is parsed into its typed form, so the lock,
+  the staleness graph and the second implementation see ordinary stages. That is
+  also what makes a variable a *tracked* input: the lock records the command and
+  the dependency ids after substitution, so a moved variable stales the stage by
+  the ordinary rule.
+
+  An unresolved reference is now an error rather than text left in place. A
+  `deps` entry spelled `${train.dataset}` named no file, so nothing compared it
+  and the stage reported itself current against an input never checked — both
+  implementations skipped such deps, and neither says so.
+
 - `tsp params [--compare <rev>]`, mirroring `tsp metrics`. It shows the keys
   stages declare under `params:` and nothing else, because those are the ones
   staleness is decided from — a listing that showed more would disagree with
@@ -123,7 +140,6 @@ is the one answer this tool exists not to give.
   so deciding whether a stage is stale is a tree lookup rather than a pass over
   the data it was built from.
 
-- **Templated stages.** `foreach` and `matrix` are refused rather than expanded.
 
 [Unreleased]: https://github.com/tensorspace-ai/tsp/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/tensorspace-ai/tsp/releases/tag/v0.1.0

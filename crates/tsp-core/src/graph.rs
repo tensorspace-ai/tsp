@@ -189,10 +189,6 @@ pub fn status_of(pipeline: &Pipeline, lock: &Lock, stage_name: &str, now: &Resol
 
     let mut comparable = 0usize;
     for dep in stage.deps.iter() {
-        // An unresolved `${...}` interpolation has nothing to compare against.
-        if dep.contains("${") {
-            continue;
-        }
         let Some(recorded) = locked.deps.get(dep) else {
             return Status::Stale(format!("new dependency {dep}"));
         };

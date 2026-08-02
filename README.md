@@ -179,11 +179,25 @@ stage keys, the same polymorphic spellings. What is missing is DVC's
 data-management layer: no cache directory, no remotes, no `dvc push`. Git LFS
 does that job and does it for every git client, not just this one.
 
-Templated stages are the gap worth knowing about. `foreach`, `matrix`, `vars`,
-`frozen`, `always_changed` and `artifacts` are **refused**, not ignored, because
-a `foreach` stage keeps its command under `do:` — dropping it would leave a
-stage that runs nothing and then reports itself up to date. Write those stages
-out, or keep running that pipeline with `dvc`.
+Templated stages are read. `vars`, `${...}` interpolation, `foreach` with `do`,
+and `matrix` all expand, and `params.yaml` is in scope without being named, the
+way DVC does it. Generated stages take DVC's names too — `train@cnn-mnist` — so
+a `dvc.yaml` and a `tsp.yaml` describe the same pipeline down to what each stage
+is called.
+
+Expansion happens before anything else, which is what makes a variable a tracked
+input rather than a hidden one. `tsp.lock` records the command a stage ran and
+the object id of each dependency, both after substitution, so moving
+`${data.path}` changes the recorded command or the recorded path and the stage
+goes stale by the ordinary rule.
+
+An unresolved reference is an error rather than text left as it was found. A
+`deps` entry still spelled `${train.dataset}` names no file, so nothing would
+compare it and the stage would report itself current against an input that was
+never checked.
+
+`frozen`, `always_changed` and `artifacts` are still **refused**, not ignored:
+staleness comes from the lock alone, and there is no artifact registry.
 
 `dvc.lock` is not read either, and will not be. DVC records a content hash (md5)
 per output; `tsp.lock` records a git object id per dependency, and neither can be

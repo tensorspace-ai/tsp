@@ -15,6 +15,7 @@ use std::path::Path;
 
 use indexmap::IndexMap;
 
+use crate::expand;
 use crate::plots::{self, Plot};
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,14 @@ pub enum PipelineError {
         template: String,
         known: String,
     },
+    #[error("cannot read the expanded {path}")]
+    Expanded {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error(transparent)]
+    Expand(#[from] crate::expand::ExpandError),
     #[error("{path}: {location} should be {want}, but is {got}")]
     WrongShape {
         path: String,
@@ -89,31 +98,57 @@ fn default_schema() -> u32 {
 }
 
 /// The keys a pipeline file may carry at the top level.
-pub const PIPELINE_KEYS: [&str; 3] = ["schema", "stages", "plots"];
+pub const PIPELINE_KEYS: [&str; 4] = ["schema", "stages", "plots", "vars"];
 
-/// The keys a stage may carry.
+/// The keys an ordinary stage may carry.
 pub const STAGE_KEYS: [&str; 8] = [
     "cmd", "wdir", "deps", "outs", "metrics", "plots", "params", "desc",
 ];
 
+/// A `foreach` stage carries only the list and the body to repeat; everything
+/// else belongs inside `do:`.
+pub const FOREACH_KEYS: [&str; 2] = ["foreach", "do"];
+
+/// A `matrix` stage carries its axes beside the ordinary keys — DVC puts the
+/// body at stage level here rather than under `do:`.
+pub const MATRIX_KEYS: [&str; 9] = [
+    "matrix", "cmd", "wdir", "deps", "outs", "metrics", "plots", "params", "desc",
+];
+
 /// Why a key DVC defines is refused rather than ignored.
 ///
-/// These parse as the shape they are and mean nothing to this tool, which is
-/// the dangerous combination: a `foreach` stage keeps its command under `do:`,
-/// so dropping the key leaves a stage with an empty `cmd` — one that runs
-/// nothing and is judged current the moment it has "run".
+/// What remains here are the keys that parse as the shape they are and mean
+/// nothing to this tool, which is the dangerous combination — a key silently
+/// dropped changes what a stage does without changing how it reads.
+///
+/// `foreach`, `matrix`, `do` and `vars` used to be on this list. They are
+/// expanded now; see `expand.rs`.
 fn dvc_hint(key: &str) -> Option<&'static str> {
     match key {
-        "foreach" | "matrix" | "do" => Some(
-            "tsp does not expand templated stages; write them out, or keep running this pipeline with dvc",
-        ),
-        "vars" => Some("tsp does not substitute variables"),
         "frozen" | "always_changed" => {
             Some("tsp decides staleness from the lock alone, so this would be ignored")
         }
         "artifacts" => Some("tsp has no artifact registry"),
         _ => None,
     }
+}
+
+/// Whether the file uses templating at all.
+///
+/// A cheap scan, and deliberately conservative: a false positive costs one
+/// extra pass through the generic document, while a false negative would leave
+/// a `${...}` unexpanded. `vars:` and `foreach:` are matched as keys rather
+/// than as substrings so a *command* mentioning them does not trip it.
+fn needs_expansion(text: &str) -> bool {
+    if text.contains("${") {
+        return true;
+    }
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        ["vars:", "foreach:", "matrix:"]
+            .iter()
+            .any(|key| trimmed.starts_with(key))
+    })
 }
 
 /// Checks the file's shape and keys before the typed parse.
@@ -179,12 +214,38 @@ fn check_shape(text: &str, path: &str) -> Result<()> {
                 stage,
             ));
         };
+        // Which keys are allowed depends on the shape the stage declares. A
+        // `foreach` stage carries only the list and the body; a `matrix` one
+        // carries its axes beside the ordinary keys, which is DVC's spelling
+        // for each and the reason they are checked apart.
+        let (allowed, body) = if stage.contains_key("foreach") {
+            (&FOREACH_KEYS[..], stage.get("do"))
+        } else if stage.contains_key("matrix") {
+            (&MATRIX_KEYS[..], None)
+        } else {
+            (&STAGE_KEYS[..], None)
+        };
         for key in stage.keys() {
-            if !STAGE_KEYS.contains(&key.as_str()) {
-                return Err(unknown(format!("stage {name:?}"), key, &STAGE_KEYS));
+            if !allowed.contains(&key.as_str()) {
+                return Err(unknown(format!("stage {name:?}"), key, allowed));
             }
         }
-        if let Some(entries) = stage.get("plots").and_then(serde_json::Value::as_array) {
+
+        // A `do:` block is an ordinary stage one level down, and its keys and
+        // plot templates are checked as one.
+        let inner = match body {
+            Some(serde_json::Value::Object(inner)) => {
+                for key in inner.keys() {
+                    if !STAGE_KEYS.contains(&key.as_str()) {
+                        return Err(unknown(format!("stage {name:?} do"), key, &STAGE_KEYS));
+                    }
+                }
+                Some(inner)
+            }
+            _ => None,
+        };
+        let plots_of = inner.unwrap_or(stage);
+        if let Some(entries) = plots_of.get("plots").and_then(serde_json::Value::as_array) {
             check_templates(entries, &format!("stage {name:?}"), path)?;
         }
     }
@@ -302,15 +363,60 @@ impl Pipeline {
             path: path.display().to_string(),
             source,
         })?;
-        Self::parse(&text, &path.display().to_string())
+        // Variables come from files beside the pipeline, so the reader is the
+        // directory it was found in.
+        let root = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let read = move |name: &str| std::fs::read(root.join(name)).ok();
+        Self::parse_with(&text, &path.display().to_string(), &read)
     }
 
+    /// Parses a pipeline that reads no files, i.e. whose variables are all
+    /// inline. Anything naming `params.yaml` wants [`Self::parse_with`].
     pub fn parse(text: &str, origin: &str) -> Result<Self> {
+        Self::parse_with(text, origin, &|_| None)
+    }
+
+    /// Parses a pipeline, resolving variables through `read`.
+    ///
+    /// Templating is handled here and nowhere else: `read` supplies the files
+    /// `vars:` names, expansion turns the templated stages into real ones, and
+    /// only then is the typed pipeline built. A `Stage` therefore never carries
+    /// a `foreach`, and nothing downstream has to know templating exists.
+    pub fn parse_with(text: &str, origin: &str, read: expand::ReadFile) -> Result<Self> {
         check_shape(text, origin)?;
+
+        // Only a templated file takes the generic route. An ordinary one is
+        // parsed straight from the text so a type error keeps the line and
+        // column the YAML reader gives it.
+        if !needs_expansion(text) {
+            return Self::from_text(text, origin);
+        }
+
+        let mut document: serde_json::Value =
+            yaml_serde::from_str(text).map_err(|source| PipelineError::Parse {
+                path: origin.to_owned(),
+                source,
+            })?;
+        let vars = expand::build_vars(&document, origin, read)?;
+        expand::expand(&mut document, &vars, origin)?;
+
+        let pipeline: Self =
+            serde_json::from_value(document).map_err(|source| PipelineError::Expanded {
+                path: origin.to_owned(),
+                source,
+            })?;
+        Self::finish(pipeline, origin)
+    }
+
+    fn from_text(text: &str, origin: &str) -> Result<Self> {
         let pipeline: Self = yaml_serde::from_str(text).map_err(|source| PipelineError::Parse {
             path: origin.to_owned(),
             source,
         })?;
+        Self::finish(pipeline, origin)
+    }
+
+    fn finish(pipeline: Self, origin: &str) -> Result<Self> {
         // Unlike the lock, which only records what the last run saw and can be
         // thrown away for the cost of a rerun, the pipeline *is* the user's
         // definition. A shape this version cannot read must stop the command
@@ -723,20 +829,70 @@ stages:
         assert!(err.to_string().contains("nope"), "{err}");
     }
 
-    /// The whole point of refusing these: dropping `foreach` leaves a stage
-    /// whose command is empty, which runs nothing and then reports itself
-    /// current. Erroring is the only honest answer.
+    /// A `foreach` reaches the typed pipeline as real stages. This used to be
+    /// refused, because dropping the key leaves a stage whose command is empty
+    /// — one that runs nothing and then reports itself current. Expanding it is
+    /// the other honest answer, and the one a dvc.yaml needs.
     #[test]
-    fn a_dvc_foreach_stage_is_refused_and_says_why() {
-        let err = Pipeline::parse(
+    fn a_dvc_foreach_stage_becomes_one_stage_per_item() {
+        let pipeline = Pipeline::parse(
             "stages:\n  train:\n    foreach: [a, b]\n    do:\n      cmd: train ${item}\n",
             "dvc.yaml",
         )
+        .unwrap();
+        let names: Vec<&str> = pipeline.stages.keys().map(String::as_str).collect();
+        assert_eq!(names, ["train@a", "train@b"]);
+        assert_eq!(pipeline.stages["train@b"].cmd.join("\n"), "train b");
+    }
+
+    /// The typed Stage has no `foreach` field and never sees one: expansion
+    /// happens before it is built, which is what keeps the lock, the graph and
+    /// the browser unaware that templating exists.
+    #[test]
+    fn a_matrix_stage_becomes_its_cross_product() {
+        let pipeline = Pipeline::parse(
+            "stages:\n  t:\n    matrix:\n      m: [cnn, rnn]\n      s: [1, 2]\n    cmd: run ${item.m} ${item.s}\n",
+            "dvc.yaml",
+        )
+        .unwrap();
+        let names: Vec<&str> = pipeline.stages.keys().map(String::as_str).collect();
+        assert_eq!(names, ["t@cnn-1", "t@cnn-2", "t@rnn-1", "t@rnn-2"]);
+        assert_eq!(pipeline.stages["t@rnn-2"].cmd.join("\n"), "run rnn 2");
+    }
+
+    /// A `do:` block is an ordinary stage one level down, so a typo in it is
+    /// caught with the same message and named where it sits.
+    #[test]
+    fn a_misspelled_key_inside_do_is_refused() {
+        let err = Pipeline::parse(
+            "stages:\n  t:\n    foreach: [a]\n    do:\n      cmd: x\n      outz: [m.bin]\n",
+            "tsp.yaml",
+        )
         .unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("foreach"), "{text}");
-        assert!(text.contains("train"), "names the stage: {text}");
-        assert!(text.contains("dvc"), "points somewhere useful: {text}");
+        assert!(text.contains("outz"), "{text}");
+        assert!(text.contains("outs"), "lists the known keys: {text}");
+    }
+
+    /// Everything but the list and the body belongs inside `do:`, so a stray
+    /// key beside `foreach` is a mistake worth naming.
+    #[test]
+    fn a_foreach_stage_carries_only_the_list_and_the_body() {
+        let err = Pipeline::parse(
+            "stages:\n  t:\n    foreach: [a]\n    cmd: x\n    do:\n      cmd: y\n",
+            "tsp.yaml",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cmd"), "{err}");
+    }
+
+    /// An unresolved reference names no file, so nothing would compare it and
+    /// the stage would report itself current against an input never checked.
+    #[test]
+    fn an_unknown_variable_is_refused() {
+        let err =
+            Pipeline::parse("stages:\n  t:\n    cmd: run ${nope.here}\n", "tsp.yaml").unwrap_err();
+        assert!(err.to_string().contains("nope.here"), "{err}");
     }
 
     #[test]

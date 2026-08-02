@@ -10,6 +10,7 @@ contract rather than one program's behaviour.
 - [Parameters](#parameters)
 - [Plots](#plots)
 - [`tsp.lock`](#tsplock) — the record a run leaves
+- [Templated stages](#templated-stages)
 - [Metric direction](#metric-direction)
 - [What is not supported](#what-is-not-supported)
 
@@ -227,6 +228,79 @@ inside them.
 Anything else gets the delta with no verdict. Metrics files are flattened to
 dotted keys, with array elements indexed.
 
+## Templated stages
+
+`vars`, `${...}`, `foreach` and `matrix` are DVC's, and they mean the same here.
+
+Expansion runs before anything else reads the pipeline, so `tsp.lock`, the
+staleness graph and any browser rendering the DAG see ordinary stages. That
+ordering is what makes a variable a tracked input: the lock records the command
+and the dependency ids *after* substitution, so a moved variable stales the
+stage by the ordinary rule and staleness needed no new concept.
+
+**An unresolved reference is an error.** A `deps` entry still spelled
+`${train.dataset}` names no file, so nothing would compare it and the stage
+would report itself current against an input that was never checked.
+
+### Variables
+
+`params.yaml` is in scope without being named. `vars:` layers over it, later
+entries winning, and takes either a file or an inline mapping:
+
+```yaml
+vars:
+  - config/models.yaml
+  - root: data
+```
+
+A reference is a dotted path, with `[n]` for a list: `${train.max_depth}`,
+`${models[0]}`. A value that names another is resolved, up to 8 passes; one that
+names itself is refused. `\${HOME}` is a literal `${HOME}`.
+
+Only scalars substitute. `${train}` naming a mapping is an error, because what
+lands in the command would otherwise be whatever the serialiser emitted.
+
+### `foreach`
+
+The body goes under `do:`, and nothing else belongs beside `foreach`.
+
+```yaml
+stages:
+  build:
+    foreach: [us, eu]        # or a mapping, or ${a_variable}
+    do:
+      cmd: build ${item}
+      outs:
+        - "out/${item}.bin"
+```
+
+A list binds `${item}`. A mapping binds `${key}` to the key and `${item}` to the
+value. Stages are named `build@us`, `build@eu` — an element that is not a scalar
+is numbered instead.
+
+### `matrix`
+
+The cross product, with the body at stage level rather than under `do:`, which
+is DVC's shape:
+
+```yaml
+stages:
+  train:
+    matrix:
+      model: [cnn, rnn]
+      dataset: [mnist, cifar]
+    cmd: python train.py --model ${item.model} --data ${item.dataset}
+```
+
+`${item.<axis>}` reads one coordinate. Names join the values with a dash, in the
+order the axes are declared: `train@cnn-mnist`. A single value stands for a list
+of one.
+
+One `foreach` or `matrix` may generate at most **1000** stages, and is refused
+rather than truncated beyond that — half a matrix is a pipeline that silently
+does not run what it says. Two items that render the same name are refused for
+the same reason.
+
 ## What is not supported
 
 `dvc.yaml` is read as the same shape, but these DVC features are **refused**
@@ -235,10 +309,11 @@ looks fine and does the wrong thing:
 
 | Key | Why |
 | --- | --- |
-| `foreach`, `matrix`, `do` | Templated stages are not expanded. The command lives under `do:`, so dropping these leaves a stage with no command — one that runs nothing and reports itself current. Write the stages out, or keep running that pipeline with `dvc`. |
-| `vars` | No variable substitution. |
 | `frozen`, `always_changed` | Staleness comes from the lock alone. |
 | `artifacts` | No artifact registry. |
+
+`foreach`, `matrix`, `do` and `vars` are **expanded** — see
+[Templated stages](#templated-stages).
 
 `dvc.lock` is not read, and that is a limit rather than a missing feature. A DVC
 lock records a content hash (md5) per output; `tsp.lock` records a git object id
