@@ -48,6 +48,21 @@ jobs:
       - run: cargo run -q -p tsp-core --example gen_vectors > /tmp/vectors.json
       - run: diff -u tests/vectors.json /tmp/vectors.json
 
+  # The release builds a Windows binary, so Windows has to be built and tested
+  # somewhere. Only the library's own tests run here: the end-to-end suite
+  # drives shell scripts through `sh`, which is a Unix assumption the fixtures
+  # make rather than one the tool makes.
+  windows:
+    name: windows builds and passes the library tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git lfs install
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: cargo test -p tsp-core
+
   msrv:
     name: minimum supported Rust version
     runs-on: ubuntu-latest
@@ -65,3 +80,15 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Advisories are only half the question. This one is about what a released
+  # binary is allowed to carry: an explicit licence allow-list, and no source
+  # other than crates.io.
+  deny:
+    name: licences and sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
