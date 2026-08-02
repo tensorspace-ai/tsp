@@ -83,6 +83,21 @@ impl Repo {
         self.root.join(tsp_core::lock::FILE_NAME)
     }
 
+    /// Resolves a revision the user named, refusing one git does not know.
+    ///
+    /// Reading a file at a revision cannot tell "no such revision" from "the
+    /// file is not in it", and both arrive as an empty column. Checking the
+    /// revision itself once, up front, is what separates the two.
+    pub fn require_rev(&self, rev: &str) -> Result<()> {
+        if self.git.rev_parse(rev).is_err() {
+            bail!(
+                "no revision named {rev:?}; it is not a commit, branch, tag or experiment \
+                 this repository knows. `tsp exp list` shows the experiments."
+            );
+        }
+        Ok(())
+    }
+
     /// Stages in dependency order, restricted to `target` and its ancestors
     /// when one is named.
     pub fn plan(&self, target: Option<&str>) -> Result<Vec<String>> {

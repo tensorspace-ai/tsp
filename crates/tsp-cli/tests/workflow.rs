@@ -461,6 +461,25 @@ fn a_stage_that_skips_its_declared_output_stops_the_run() {
     );
 }
 
+/// Reading a file at a revision cannot tell a missing file from a missing
+/// revision, so a typo used to render as a plausible, empty comparison.
+#[test]
+fn an_unknown_revision_is_refused_rather_than_compared_against_nothing() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+
+    for args in [
+        vec!["metrics", "--compare", "no-such-rev"],
+        vec!["plots", "no-such-rev"],
+    ] {
+        let out = f.tsp(&args);
+        assert!(!out.status.success(), "{args:?} should fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("no-such-rev"), "{stderr}");
+    }
+}
+
 #[test]
 fn metrics_are_listed_and_compared() {
     let f = Fixture::new();

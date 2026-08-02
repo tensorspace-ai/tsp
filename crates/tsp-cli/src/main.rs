@@ -264,6 +264,7 @@ fn show_metrics(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
         return Ok(());
     };
 
+    repo.require_rev(rev)?;
     let other = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some(rev))?;
     print_comparison(&metrics::compare(&current, &other), "workspace", rev);
     Ok(())
@@ -299,6 +300,13 @@ fn print_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &
 
 fn show_plots(cwd: &std::path::Path, revisions: &[String], out: &str) -> Result<()> {
     let repo = Repo::open(cwd)?;
+    // Only what the user named: `HEAD` is a default this command adds, and a
+    // repository with no commits yet has none to resolve.
+    for rev in revisions {
+        if rev != plots::WORKSPACE {
+            repo.require_rev(rev)?;
+        }
+    }
     let revs = plots::revisions(revisions);
     let figures = plots::build(&repo, &revs)?;
 
