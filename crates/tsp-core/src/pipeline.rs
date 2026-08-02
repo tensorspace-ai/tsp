@@ -38,6 +38,13 @@ pub enum PipelineError {
         "{path} is schema {found} and this tsp understands {SCHEMA}; upgrade tsp to read this pipeline"
     )]
     UnsupportedSchema { path: String, found: u32 },
+    #[error("{path}: unknown key {key:?} in {location}{hint}")]
+    UnknownKey {
+        path: String,
+        location: String,
+        key: String,
+        hint: String,
+    },
 }
 
 type Result<T> = std::result::Result<T, PipelineError>;
@@ -61,6 +68,78 @@ fn default_schema() -> u32 {
     SCHEMA
 }
 
+/// The keys a pipeline file may carry at the top level.
+pub const PIPELINE_KEYS: [&str; 3] = ["schema", "stages", "plots"];
+
+/// The keys a stage may carry.
+pub const STAGE_KEYS: [&str; 8] = [
+    "cmd", "wdir", "deps", "outs", "metrics", "plots", "params", "desc",
+];
+
+/// Why a key DVC defines is refused rather than ignored.
+///
+/// These parse as the shape they are and mean nothing to this tool, which is
+/// the dangerous combination: a `foreach` stage keeps its command under `do:`,
+/// so dropping the key leaves a stage with an empty `cmd` — one that runs
+/// nothing and is judged current the moment it has "run".
+fn dvc_hint(key: &str) -> Option<&'static str> {
+    match key {
+        "foreach" | "matrix" | "do" => Some(
+            "tsp does not expand templated stages; write them out, or keep running this pipeline with dvc",
+        ),
+        "vars" => Some("tsp does not substitute variables"),
+        "frozen" | "always_changed" => {
+            Some("tsp decides staleness from the lock alone, so this would be ignored")
+        }
+        "artifacts" => Some("tsp has no artifact registry"),
+        _ => None,
+    }
+}
+
+/// Rejects keys this version does not define, before the typed parse.
+///
+/// A generic pass first is what lets the message name the key *and* the stage
+/// it sits in. It matters most for the keys that are neither typos nor
+/// supported: silently dropping `foreach` produces a DAG that runs nothing and
+/// reports success, which is the one answer this tool must never give.
+fn reject_unknown_keys(text: &str, path: &str) -> Result<()> {
+    // A syntax error is the typed parse's to report, with its line and column.
+    let Ok(root) = yaml_serde::from_str::<serde_json::Value>(text) else {
+        return Ok(());
+    };
+    let Some(top) = root.as_object() else {
+        return Ok(());
+    };
+    let unknown = |location: String, key: &str, known: &[&str]| PipelineError::UnknownKey {
+        path: path.to_owned(),
+        location,
+        key: key.to_owned(),
+        hint: match dvc_hint(key) {
+            Some(hint) => format!("; {hint}"),
+            None => format!("; known keys are {}", known.join(", ")),
+        },
+    };
+    for key in top.keys() {
+        if !PIPELINE_KEYS.contains(&key.as_str()) {
+            return Err(unknown("the pipeline".to_owned(), key, &PIPELINE_KEYS));
+        }
+    }
+    let Some(stages) = top.get("stages").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    for (name, stage) in stages {
+        let Some(stage) = stage.as_object() else {
+            continue;
+        };
+        for key in stage.keys() {
+            if !STAGE_KEYS.contains(&key.as_str()) {
+                return Err(unknown(format!("stage {name:?}"), key, &STAGE_KEYS));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A parsed pipeline.
 ///
 /// `stages` is an `IndexMap` rather than a `HashMap` because declaration order
@@ -68,6 +147,7 @@ fn default_schema() -> u32 {
 /// reordered on every run would produce a different `tsp.lock` from identical
 /// inputs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pipeline {
     #[serde(default = "default_schema")]
     pub schema: u32,
@@ -92,6 +172,7 @@ impl Default for Pipeline {
 
 /// One node of the pipeline.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Stage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cmd: StringList,
@@ -132,6 +213,7 @@ impl Pipeline {
     }
 
     pub fn parse(text: &str, origin: &str) -> Result<Self> {
+        reject_unknown_keys(text, origin)?;
         let pipeline: Self = yaml_serde::from_str(text).map_err(|source| PipelineError::Parse {
             path: origin.to_owned(),
             source,
@@ -534,6 +616,50 @@ stages:
     fn an_unknown_stage_is_named_in_the_error() {
         let err = sample().stage("nope").unwrap_err();
         assert!(err.to_string().contains("nope"), "{err}");
+    }
+
+    /// The whole point of refusing these: dropping `foreach` leaves a stage
+    /// whose command is empty, which runs nothing and then reports itself
+    /// current. Erroring is the only honest answer.
+    #[test]
+    fn a_dvc_foreach_stage_is_refused_and_says_why() {
+        let err = Pipeline::parse(
+            "stages:\n  train:\n    foreach: [a, b]\n    do:\n      cmd: train ${item}\n",
+            "dvc.yaml",
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("foreach"), "{text}");
+        assert!(text.contains("train"), "names the stage: {text}");
+        assert!(text.contains("dvc"), "points somewhere useful: {text}");
+    }
+
+    #[test]
+    fn a_misspelled_stage_key_is_refused_and_lists_the_real_ones() {
+        let err = Pipeline::parse("stages:\n  a:\n    cmd: x\n    outz: [m.bin]\n", "tsp.yaml")
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("outz"), "{text}");
+        assert!(text.contains("outs"), "lists the known keys: {text}");
+    }
+
+    /// `stagez:` used to parse as a pipeline with no stages at all, so the tool
+    /// reported "nothing to do" about a file that plainly defined work.
+    #[test]
+    fn a_misspelled_top_level_key_is_refused() {
+        let err = Pipeline::parse("stagez:\n  a:\n    cmd: x\n", "tsp.yaml").unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("stagez"), "{text}");
+        assert!(text.contains("stages"), "lists the known keys: {text}");
+    }
+
+    #[test]
+    fn a_syntax_error_is_still_reported_as_one() {
+        let err = Pipeline::parse("stages: [unclosed\n", "tsp.yaml").unwrap_err();
+        assert!(
+            matches!(err, PipelineError::Parse { .. }),
+            "expected a parse error, got {err}"
+        );
     }
 
     /// A stage's plot entry is both an artifact and a drawing instruction, and
