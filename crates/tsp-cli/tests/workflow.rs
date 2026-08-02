@@ -1000,3 +1000,261 @@ fn params_says_so_when_a_pipeline_declares_none() {
     let out = f.tsp_ok(&["params"]);
     assert!(out.contains("No parameters declared"), "{out}");
 }
+
+/// The document must not grow a second vocabulary. `status` and `status --json`
+/// are the same verdicts, and the strings are the ones the conformance vectors
+/// pin and the second implementation is tested against.
+#[test]
+fn status_json_uses_the_same_words_the_table_does() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+    // One stage current, one stale.
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  factor: 9\n",
+    );
+
+    let table = f.tsp_ok(&["status"]);
+    let doc: serde_json::Value = serde_json::from_str(&f.tsp_ok(&["status", "--json"])).unwrap();
+
+    assert_eq!(doc["schema"], 1);
+    assert_eq!(doc["kind"], "status");
+    assert_eq!(doc["pipeline_file"], "tsp.yaml");
+
+    for stage in doc["stages"].as_array().unwrap() {
+        let label = stage["status"].as_str().unwrap();
+        assert!(
+            table.contains(label),
+            "the table should use the same label {label:?}:\n{table}"
+        );
+        if let Some(reason) = stage["reason"].as_str() {
+            assert!(
+                table.contains(reason),
+                "and the same reason {reason:?}:\n{table}"
+            );
+        }
+    }
+
+    let summary = &doc["summary"];
+    assert_eq!(summary["total"], 2);
+    assert_eq!(summary["needs_run"], 1);
+    assert_eq!(summary["stale"], 1);
+    assert_eq!(summary["current"], 1);
+}
+
+/// The note a person sees on stderr is a field a program can read.
+#[test]
+fn status_json_carries_the_dvc_note_a_terminal_would_have_shown() {
+    let f = Fixture::new();
+    f.write("dvc.lock", DVC_LOCK);
+
+    let out = f.tsp(&["status", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    let notes = doc["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{doc}");
+    assert_eq!(notes[0]["code"], "dvc_lock_not_read");
+    assert!(notes[0]["message"].as_str().unwrap().contains("dvc.lock"));
+
+    // In JSON mode the prose does not also go to stderr: the document is the
+    // whole answer, and duplicating it would double-report in a log.
+    assert!(
+        String::from_utf8_lossy(&out.stderr).is_empty(),
+        "stderr should be quiet in json mode: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn metrics_json_carries_both_the_value_and_its_rendering() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+
+    let doc: serde_json::Value = serde_json::from_str(&f.tsp_ok(&["metrics", "--json"])).unwrap();
+    assert_eq!(doc["kind"], "metrics");
+
+    let accuracy = doc["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["key"] == "accuracy")
+        .expect("an accuracy value");
+    assert_eq!(accuracy["file"], "metrics.json");
+    assert_eq!(accuracy["value"], 12, "the raw scalar, for arithmetic");
+    assert_eq!(accuracy["display"], "12", "and the rendering, for a table");
+}
+
+#[test]
+fn metrics_json_reports_a_delta_and_whether_it_improved() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "baseline"]);
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  factor: 10\n",
+    );
+    f.tsp_ok(&["repro"]);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&f.tsp_ok(&["metrics", "--compare", "HEAD", "--json"])).unwrap();
+    assert_eq!(doc["current_label"], "workspace");
+    assert_eq!(doc["compare_label"], "HEAD");
+
+    let rows = doc["rows"].as_array().unwrap();
+    let accuracy = rows.iter().find(|r| r["key"] == "accuracy").unwrap();
+    assert_eq!(accuracy["improved"], true, "accuracy rose: {accuracy}");
+    assert_eq!(accuracy["direction"], "higher_is_better");
+    assert_eq!(accuracy["delta"], 48.0);
+    assert_eq!(accuracy["delta_display"], "+48");
+
+    // "lines" settles no direction, and that third state is not `false`.
+    let lines = rows.iter().find(|r| r["key"] == "lines").unwrap();
+    assert!(lines["improved"].is_null(), "{lines}");
+    assert_eq!(lines["direction"], "unknown");
+}
+
+/// A parameter is a setting, not a result. The document has no field for a
+/// verdict, so one cannot be published even though metrics::compare computes it.
+#[test]
+fn params_json_omits_the_verdict_a_metric_would_carry() {
+    let f = Fixture::new();
+    f.write(
+        "tsp.yaml",
+        &PIPELINE.replace("          - train.factor", "          - train.loss_weight"),
+    );
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  loss_weight: 2\n",
+    );
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-qm", "a parameter named for a loss"]);
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  loss_weight: 1\n",
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&f.tsp_ok(&["params", "--compare", "HEAD", "--json"])).unwrap();
+    assert_eq!(doc["kind"], "params");
+
+    let row = doc["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "train.loss_weight")
+        .unwrap();
+    let row = row.as_object().unwrap();
+    assert!(!row.contains_key("improved"), "{row:?}");
+    assert!(!row.contains_key("direction"), "{row:?}");
+    assert_eq!(row["delta_display"], "-1", "the delta is still reported");
+}
+
+#[test]
+fn exp_list_json_lines_experiments_up_under_the_same_metric_keys() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "baseline"]);
+    f.tsp_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&f.tsp_ok(&["exp", "list", "--json"])).unwrap();
+    assert_eq!(doc["kind"], "exp_list");
+
+    let keys: Vec<&str> = doc["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    assert!(keys.contains(&"accuracy"), "{doc}");
+
+    let rows = doc["rows"].as_array().unwrap();
+    assert_eq!(rows[0]["name"], "HEAD");
+    assert_eq!(rows[0]["baseline"], true);
+    let tenfold = rows.iter().find(|r| r["name"] == "tenfold").unwrap();
+    assert_eq!(tenfold["baseline"], false);
+    assert_eq!(tenfold["metrics"]["accuracy"]["value"], 60);
+    assert_eq!(tenfold["metrics"]["accuracy"]["display"], "60");
+}
+
+#[test]
+fn exp_show_json_names_the_experiment_and_its_commit() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "baseline"]);
+    f.tsp_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&f.tsp_ok(&["exp", "show", "tenfold", "--json"])).unwrap();
+    assert_eq!(doc["kind"], "exp_show");
+    assert_eq!(doc["experiment"]["name"], "tenfold");
+    assert_eq!(
+        doc["experiment"]["commit"].as_str().unwrap().len(),
+        40,
+        "the full sha, not the short one"
+    );
+    assert_eq!(doc["current_label"], "tenfold");
+    assert_eq!(doc["compare_label"], "HEAD");
+}
+
+/// The single most common way a --json flag gets it wrong: printing prose on
+/// stdout when there is nothing to report, so a consumer's parse fails on the
+/// empty case and only on the empty case.
+#[test]
+fn an_empty_result_is_still_a_valid_json_document() {
+    let f = Fixture::new();
+    // A pipeline that declares no metrics, no params and no experiments.
+    f.write(
+        "tsp.yaml",
+        "stages:\n  train:\n    cmd: sh scripts/train.sh\n",
+    );
+
+    for args in [
+        vec!["metrics", "--json"],
+        vec!["params", "--json"],
+        vec!["exp", "list", "--json"],
+    ] {
+        let out = f.tsp_ok(&args);
+        let doc: serde_json::Value = serde_json::from_str(&out)
+            .unwrap_or_else(|e| panic!("tsp {args:?} did not emit a document: {e}\n{out}"));
+        assert_eq!(doc["schema"], 1, "tsp {args:?}: {doc}");
+    }
+}
+
+/// stdout carries the document and nothing else, whatever else is going on.
+#[test]
+fn json_output_is_the_only_thing_on_stdout() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "run"]);
+    // A dvc.lock, so there is a note competing for the reader's attention.
+    f.write("dvc.lock", DVC_LOCK);
+
+    for args in [
+        vec!["status", "--json"],
+        vec!["metrics", "--json"],
+        vec!["metrics", "--compare", "HEAD", "--json"],
+        vec!["params", "--json"],
+        vec!["params", "--compare", "HEAD", "--json"],
+        vec!["exp", "list", "--json"],
+    ] {
+        let out = f.tsp_ok(&args);
+        serde_json::from_str::<serde_json::Value>(&out)
+            .unwrap_or_else(|e| panic!("tsp {args:?} put something else on stdout: {e}\n{out}"));
+    }
+}

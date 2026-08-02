@@ -8,6 +8,7 @@
 //! still holds, and what a given experiment changed.
 
 mod exp;
+mod output;
 
 mod plots;
 mod repo;
@@ -19,6 +20,7 @@ use tsp_core::git::Git;
 use tsp_core::metrics;
 use tsp_core::params::{self, Override};
 
+use output::{Format, Note};
 use repo::Repo;
 
 #[derive(Parser)]
@@ -79,18 +81,28 @@ enum Command {
         force: bool,
     },
     /// Show which stages are current, stale or new
-    Status,
+    Status {
+        /// Write a JSON document instead of a table
+        #[arg(long)]
+        json: bool,
+    },
     /// Show metric values, optionally against another revision
     Metrics {
         /// Revision to compare against, e.g. a branch, tag or experiment
         #[arg(long, value_name = "REV")]
         compare: Option<String>,
+        /// Write a JSON document instead of a table
+        #[arg(long)]
+        json: bool,
     },
     /// Show parameter values, optionally against another revision
     Params {
         /// Revision to compare against, e.g. a branch, tag or experiment
         #[arg(long, value_name = "REV")]
         compare: Option<String>,
+        /// Write a JSON document instead of a table
+        #[arg(long)]
+        json: bool,
     },
     /// Render the pipeline's plots to a self-contained HTML page
     Plots {
@@ -137,11 +149,18 @@ enum ExpCommand {
         force: bool,
     },
     /// List recorded experiments and their metrics
-    List,
+    List {
+        /// Write a JSON document instead of a table
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one experiment in detail
     Show {
         /// Experiment to show, as listed by `tsp exp list`
         name: String,
+        /// Write a JSON document instead of a table
+        #[arg(long)]
+        json: bool,
     },
     /// Bring an experiment's parameters and outputs into the working tree
     Apply {
@@ -163,14 +182,18 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Init { lfs } => init(&cwd, &lfs),
         Command::Repro { stage, force } => repro(&cwd, stage.as_deref(), force),
-        Command::Status => status(&cwd),
-        Command::Metrics { compare } => show_metrics(&cwd, compare.as_deref()),
-        Command::Params { compare } => show_params(&cwd, compare.as_deref()),
+        Command::Status { json } => status(&cwd, Format::from_flag(json)),
+        Command::Metrics { compare, json } => {
+            show_metrics(&cwd, compare.as_deref(), Format::from_flag(json))
+        }
+        Command::Params { compare, json } => {
+            show_params(&cwd, compare.as_deref(), Format::from_flag(json))
+        }
         Command::Plots { revisions, out } => show_plots(&cwd, &revisions, &out),
         Command::Exp(args) => match args.command {
             ExpCommand::Run { set, name, force } => exp_run(&cwd, &set, name.as_deref(), force),
-            ExpCommand::List => exp_list(&cwd),
-            ExpCommand::Show { name } => exp_show(&cwd, &name),
+            ExpCommand::List { json } => exp_list(&cwd, Format::from_flag(json)),
+            ExpCommand::Show { name, json } => exp_show(&cwd, &name, Format::from_flag(json)),
             ExpCommand::Apply { name } => exp_apply(&cwd, &name),
             ExpCommand::Remove { names } => exp_remove(&cwd, &names),
         },
@@ -322,12 +345,38 @@ fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> 
     Ok(())
 }
 
-fn status(cwd: &std::path::Path) -> Result<()> {
-    let repo = Repo::open(cwd)?;
+/// The notes a command has for its reader, whatever shape it is emitting in.
+///
+/// In a terminal they go to stderr, which is what keeps a JSON document the
+/// only thing on stdout. In a document they are a field, so a program sees
+/// exactly what a person would have.
+fn notes_for(repo: &Repo, format: Format) -> Vec<Note> {
+    let mut notes = Vec::new();
     if repo.dvc_lock_unread {
-        eprintln!("note: {}\n", dvc_lock_note());
+        let message = dvc_lock_note();
+        if format == Format::Text {
+            eprintln!("note: {message}\n");
+        }
+        notes.push(Note {
+            code: output::DVC_LOCK_NOT_READ,
+            message,
+        });
     }
+    notes
+}
+
+fn status(cwd: &std::path::Path, format: Format) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let notes = notes_for(&repo, format);
     let statuses = repo.statuses()?;
+
+    if format.is_json() {
+        return output::emit(&output::status_document(
+            &repo.pipeline_file,
+            &statuses,
+            &notes,
+        ));
+    }
 
     if statuses.is_empty() {
         println!("No stages defined in {}.", repo.pipeline_file);
@@ -362,25 +411,40 @@ fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
     if count == 1 { one } else { many }
 }
 
-fn show_metrics(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
+fn show_metrics(cwd: &std::path::Path, compare: Option<&str>, format: Format) -> Result<()> {
     let repo = Repo::open(cwd)?;
+    let notes = notes_for(&repo, format);
     let current = metrics::read(repo.git(), repo.root(), &repo.pipeline, None)?;
 
     let Some(rev) = compare else {
+        if format.is_json() {
+            // An empty result is an empty document, never a sentence: a
+            // consumer that has to parse prose out of stdout has no contract.
+            return output::emit(&output::values_document("metrics", &current, &notes));
+        }
         if current.is_empty() {
             println!("No metrics files found. Declare them under a stage's `metrics:`.");
             return Ok(());
         }
-        let width = current.iter().map(|m| m.key.len()).max().unwrap_or(0);
-        for metric in &current {
-            println!("  {:<width$}  {}", metric.key, metric.display());
-        }
+        output::print_values(&current);
         return Ok(());
     };
 
     repo.require_rev(rev)?;
     let other = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some(rev))?;
-    print_comparison(&metrics::compare(&current, &other), "workspace", rev);
+    let rows = metrics::compare(&current, &other);
+    if format.is_json() {
+        return output::emit(&output::comparison_document(
+            "metrics",
+            &rows,
+            "workspace",
+            rev,
+            true,
+            None,
+            &notes,
+        ));
+    }
+    output::print_comparison(&rows, "workspace", rev);
     Ok(())
 }
 
@@ -391,93 +455,41 @@ fn show_metrics(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
 /// What it does *not* share is the verdict. `print_comparison` only calls a
 /// change better or worse when the direction is judged, and a parameter has no
 /// direction — see `print_params_comparison`.
-fn show_params(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
+fn show_params(cwd: &std::path::Path, compare: Option<&str>, format: Format) -> Result<()> {
     let repo = Repo::open(cwd)?;
+    let notes = notes_for(&repo, format);
     let current = params::read(repo.git(), repo.root(), &repo.pipeline, None)?;
 
     let Some(rev) = compare else {
+        if format.is_json() {
+            return output::emit(&output::values_document("params", &current, &notes));
+        }
         if current.is_empty() {
             println!("No parameters declared. List the keys a stage reads under its `params:`.");
             return Ok(());
         }
-        let width = current.iter().map(|p| p.key.len()).max().unwrap_or(0);
-        for param in &current {
-            println!("  {:<width$}  {}", param.key, param.display());
-        }
+        output::print_values(&current);
         return Ok(());
     };
 
     repo.require_rev(rev)?;
     let other = params::read(repo.git(), repo.root(), &repo.pipeline, Some(rev))?;
-    print_params_comparison(&metrics::compare(&current, &other), "workspace", rev);
+    let rows = metrics::compare(&current, &other);
+    if format.is_json() {
+        // judged: false. A parameter is a setting rather than a result, so the
+        // document has no field for a verdict to go in.
+        return output::emit(&output::comparison_document(
+            "params",
+            &rows,
+            "workspace",
+            rev,
+            false,
+            None,
+            &notes,
+        ));
+    }
+    output::print_params_comparison(&rows, "workspace", rev);
     Ok(())
-}
-
-/// A parameter comparison: the metrics table without the verdict column.
-///
-/// `metrics::compare` judges a row whenever the key's name implies a direction,
-/// so a parameter called `train.loss_scale` or `cost_weight` comes back marked
-/// improved. That judgement is meaningless here — a parameter is a setting, not
-/// a result — so this renders the delta and refuses to interpret it.
-fn print_params_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &str) {
-    let key_width = rows
-        .iter()
-        .map(|r| r.key.len())
-        .chain([9])
-        .max()
-        .unwrap_or(9);
-    println!(
-        "  {:<key_width$}  {:>12}  {:>12}  DELTA",
-        "PARAMETER", current_label, compare_label
-    );
-
-    for row in rows {
-        let delta = row.delta.map(metrics::format_delta).unwrap_or_default();
-        println!(
-            "{}",
-            format!(
-                "  {:<key_width$}  {:>12}  {:>12}  {delta}",
-                row.key,
-                row.current.as_deref().unwrap_or("-"),
-                row.compare.as_deref().unwrap_or("-"),
-            )
-            .trim_end()
-        );
-    }
-}
-
-fn print_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &str) {
-    let key_width = rows
-        .iter()
-        .map(|r| r.key.len())
-        .chain([6])
-        .max()
-        .unwrap_or(6);
-    println!(
-        "  {:<key_width$}  {:>12}  {:>12}  DELTA",
-        "METRIC", current_label, compare_label
-    );
-
-    for row in rows {
-        let delta = match (row.delta, row.improved) {
-            (Some(d), Some(true)) => format!("{} better", metrics::format_delta(d)),
-            (Some(d), Some(false)) => format!("{} worse", metrics::format_delta(d)),
-            (Some(d), None) => metrics::format_delta(d),
-            (None, _) => String::new(),
-        };
-        // Trimmed: a row with no delta would otherwise end in the padding the
-        // column left behind.
-        println!(
-            "{}",
-            format!(
-                "  {:<key_width$}  {:>12}  {:>12}  {delta}",
-                row.key,
-                row.current.as_deref().unwrap_or("-"),
-                row.compare.as_deref().unwrap_or("-"),
-            )
-            .trim_end()
-        );
-    }
 }
 
 fn show_plots(cwd: &std::path::Path, revisions: &[String], out: &str) -> Result<()> {
@@ -529,7 +541,7 @@ fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>, force: boo
     let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
     if !produced.is_empty() {
         println!();
-        print_comparison(
+        output::print_comparison(
             &metrics::compare(&produced, &baseline),
             &experiment.name,
             "HEAD",
@@ -539,11 +551,11 @@ fn exp_run(cwd: &std::path::Path, set: &[String], name: Option<&str>, force: boo
     Ok(())
 }
 
-fn exp_list(cwd: &std::path::Path) -> Result<()> {
+fn exp_list(cwd: &std::path::Path, format: Format) -> Result<()> {
     let repo = Repo::open(cwd)?;
     let experiments = exp::list(&repo)?;
 
-    if experiments.is_empty() {
+    if experiments.is_empty() && !format.is_json() {
         println!("No experiments yet. Run one with `tsp exp run --set key=value`.");
         return Ok(());
     }
@@ -569,9 +581,13 @@ fn exp_list(cwd: &std::path::Path) -> Result<()> {
         }
     }
 
-    let resolved: Vec<(String, Vec<Metricish>)> = read
+    if format.is_json() {
+        return output::emit(&output::exp_list_document(&keys, &read));
+    }
+
+    let resolved: Vec<(String, Vec<output::Metricish>)> = read
         .iter()
-        .map(|(name, produced)| (name.clone(), values_for(&keys, produced)))
+        .map(|(name, produced)| (name.clone(), output::values_for(&keys, produced)))
         .collect();
 
     let name_width = resolved
@@ -609,38 +625,34 @@ fn exp_list(cwd: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// A metric value already rendered for the table, or "-" when absent.
-struct Metricish(String);
-
-fn values_for(keys: &[String], metrics: &[metrics::Metric]) -> Vec<Metricish> {
-    keys.iter()
-        .map(|key| {
-            Metricish(
-                metrics
-                    .iter()
-                    .find(|m| &m.key == key)
-                    .map_or_else(|| "-".to_owned(), |m| m.display()),
-            )
-        })
-        .collect()
-}
-
-fn exp_show(cwd: &std::path::Path, name: &str) -> Result<()> {
+fn exp_show(cwd: &std::path::Path, name: &str, format: Format) -> Result<()> {
     let repo = Repo::open(cwd)?;
     let experiment = exp::find(&repo, name)?;
-
-    println!("{}  {}", experiment.name, experiment.commit);
     let produced = exp::metrics_of(&repo, &experiment)?;
     let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
+    let rows = metrics::compare(&produced, &baseline);
+
+    if format.is_json() {
+        return output::emit(&output::comparison_document(
+            "exp_show",
+            &rows,
+            &experiment.name,
+            "HEAD",
+            true,
+            Some(output::ExperimentOut {
+                name: &experiment.name,
+                commit: &experiment.commit,
+            }),
+            &[],
+        ));
+    }
+
+    println!("{}  {}", experiment.name, experiment.commit);
     if produced.is_empty() {
         println!("  (no metrics recorded)");
     } else {
         println!();
-        print_comparison(
-            &metrics::compare(&produced, &baseline),
-            &experiment.name,
-            "HEAD",
-        );
+        output::print_comparison(&rows, &experiment.name, "HEAD");
     }
     Ok(())
 }

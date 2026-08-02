@@ -476,6 +476,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "serde",
  "serde_json",
  "tempfile",
  "tsp-core",
