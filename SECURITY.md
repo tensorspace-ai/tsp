@@ -12,6 +12,21 @@ Please include the version or commit, a description of the issue, and the steps
 to reproduce it. If you have a proof of concept, include it — it makes triage
 much faster.
 
+### What to expect
+
+- **Acknowledgement within 3 working days.** If you have not heard anything by
+  then, assume the mail went astray and open a GitHub advisory instead.
+- An assessment, with whether we agree it is a vulnerability, within 10 working
+  days.
+- A fix released before any public disclosure, and 90 days at the outside. If we
+  cannot fix it in that time we will say so and agree a date with you rather
+  than let it sit.
+- Credit in the release notes and the advisory, unless you would rather not be
+  named.
+
+We will not take legal action over research done in good faith under this
+policy.
+
 ## Scope
 
 `tsp` is a command-line tool. It reads files in a repository you already trust

@@ -45,6 +45,10 @@ told two different things by two tools is being lied to by one of them.
 
 ## Commit policy
 
+This applies to an agent working in a maintainer's checkout. An outside
+contributor cannot push to `main` and should follow
+[CONTRIBUTING.md](CONTRIBUTING.md), which describes the pull request route.
+
 - **Commit directly to `main`.** No feature branches for routine work.
 - **Commit regularly** — at each coherent unit of work, not one large batch.
 - **Conventional Commits**: `type(scope): subject`, `!` before the colon for a

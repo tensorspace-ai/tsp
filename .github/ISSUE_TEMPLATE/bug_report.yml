@@ -1,0 +1,54 @@
+name: Bug report
+description: Something behaved differently from what it said it would
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One thing worth knowing before you start: if `tsp` told you a stage was
+        **current** when it was not, or **stale** when nothing moved, say so
+        plainly. That is the failure this tool exists to prevent, and it is
+        treated ahead of everything else.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, and what it did.
+      placeholder: |
+        $ tsp repro
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: pipeline
+    attributes:
+      label: The pipeline
+      description: >
+        Your `tsp.yaml` (or `dvc.yaml`), and the relevant part of `tsp.lock`.
+        Cut it down if you can — a stage or two is usually enough.
+      render: yaml
+
+  - type: input
+    id: version
+    attributes:
+      label: tsp version
+      description: Output of `tsp --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform, git and git-lfs versions
+      placeholder: macOS 15 arm64, git 2.47, git-lfs 3.5
+    validations:
+      required: true

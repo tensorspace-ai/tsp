@@ -1,0 +1,34 @@
+name: Feature request
+description: Something tsp should do and does not
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Three things are settled and will be declined, so it is only fair to say
+        so before you write:
+
+        - **A data-management layer.** No cache, no remote, no transfer command.
+          Git LFS does that job for every git client rather than only for this
+          one.
+        - **Content hashing to decide staleness.** The lock records git object
+          ids; hashing dependencies makes the tool unusable on the datasets it
+          exists for.
+        - **Parameters recorded per file rather than per key.** One stage's
+          retune must not stale its siblings.
+
+        Anything else is open.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does tsp get in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: Optional. The problem matters more than the solution.

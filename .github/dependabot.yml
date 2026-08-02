@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Grouped, because a lockfile bump per crate is noise on a repository this
+  # size and the quality gate either passes for all of them or none.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

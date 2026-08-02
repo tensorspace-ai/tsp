@@ -1,0 +1,8 @@
+# Review falls to the maintainers by default.
+*       @tensorspace-ai/maintainers
+
+# These two are a cross-language contract: a second implementation reads them,
+# and the vectors are how the two are kept honest about it.
+/tests/vectors.json                     @tensorspace-ai/maintainers
+/crates/tsp-core/src/pipeline.rs        @tensorspace-ai/maintainers
+/crates/tsp-core/src/lock.rs            @tensorspace-ai/maintainers
