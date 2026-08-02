@@ -43,6 +43,14 @@ regenerating `tests/vectors.json` **and** re-running the replay on the reader's
 side. The vectors carry reason strings as well as verdicts, because a reader
 told two different things by two tools is being lied to by one of them.
 
+`run-tests.sh` now checks the reader's copy when it is checked out beside this
+repository, and CI checks it when `READER_REPO` is set. This used to be prose
+alone, and prose alone was not enough: the reader's copy fell eight cases
+behind, every one of them a rejection, so its replay went on passing while the
+two disagreed about which pipelines are readable at all. A subset of the
+vectors passes exactly as well as the whole, which is why the reader cannot
+detect this itself and why the check belongs here.
+
 ## Commit policy
 
 Human contributors should follow [CONTRIBUTING.md](CONTRIBUTING.md), which

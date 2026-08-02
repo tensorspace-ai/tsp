@@ -48,6 +48,25 @@ jobs:
       - run: cargo run -q -p tsp-core --example gen_vectors > /tmp/vectors.json
       - run: diff -u tests/vectors.json /tmp/vectors.json
 
+      # The reader lives in another repository and keeps its own copy of the
+      # file above. Nothing on that side can tell that its copy is behind — a
+      # subset of the vectors replays exactly as well as the whole — so the
+      # comparison has to happen from here, where both are visible.
+      #
+      # Skipped when READER_REPO is unset, which is what makes a fork's pull
+      # request pass without the token this needs.
+      - name: Check out the reader
+        if: vars.READER_REPO != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.READER_REPO }}
+          ref: ${{ vars.READER_REF }}
+          token: ${{ secrets.READER_TOKEN }}
+          path: reader
+      - name: The reader replays the same vectors
+        if: vars.READER_REPO != ''
+        run: diff -u tests/vectors.json reader/modules/tsp/testdata/vectors.json
+
   # The release builds a Windows binary, so Windows has to be built and tested
   # somewhere. Only the library's own tests run here: the end-to-end suite
   # drives shell scripts through `sh`, which is a Unix assumption the fixtures
