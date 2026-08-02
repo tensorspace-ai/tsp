@@ -517,6 +517,54 @@
     "rejected": true
   },
   {
+    "name": "dvc foreach",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    foreach: [a, b]\n    do:\n      cmd: train ${item}\n",
+    "rejected": true
+  },
+  {
+    "name": "dvc matrix",
+    "kind": "pipeline",
+    "input": "stages:\n  train:\n    matrix:\n      model: [logreg, forest]\n    do:\n      cmd: train ${item.model}\n",
+    "rejected": true
+  },
+  {
+    "name": "dvc vars",
+    "kind": "pipeline",
+    "input": "vars:\n  - params.yaml\nstages:\n  a:\n    cmd: run\n",
+    "rejected": true
+  },
+  {
+    "name": "unknown stage key",
+    "kind": "pipeline",
+    "input": "stages:\n  a:\n    cmd: run\n    outz:\n      - m.bin\n",
+    "rejected": true
+  },
+  {
+    "name": "unknown top-level key",
+    "kind": "pipeline",
+    "input": "stagez:\n  a:\n    cmd: run\n",
+    "rejected": true
+  },
+  {
+    "name": "stage without a command",
+    "kind": "pipeline",
+    "input": "stages:\n  a:\n    outs:\n      - m.bin\n",
+    "rejected": true
+  },
+  {
+    "name": "unknown plot template",
+    "kind": "pipeline",
+    "input": "stages:\n  eval:\n    cmd: run\n    plots:\n      - m.json:\n          template: confusionn\n",
+    "rejected": true
+  },
+  {
+    "name": "stages is not a map",
+    "kind": "pipeline",
+    "input": "stages:\n  - a\n",
+    "rejected": true
+  },
+  {
     "name": "empty lock",
     "kind": "lock",
     "input": "schema: 3\nstages: {}\n",

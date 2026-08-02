@@ -8,11 +8,18 @@
 //! and asserts it reaches the same reading.
 //!
 //! What is compared is a *projection*, not the structs: each side carries
-//! fields the other has no use for (Go tracks `foreach` and `vars`, Rust tracks
-//! plot axis labels), and forcing those into the contract would make the
-//! vectors fail on differences that do not matter. The projection is what both
+//! fields the other has no use for (Rust tracks plot axis labels the DAG does
+//! not need), and forcing those into the contract would make the vectors fail
+//! on differences that do not matter. The projection is what both
 //! implementations must agree on for the DAG and the staleness of a stage to
 //! come out the same.
+//!
+//! Note for the reader replaying these: the `dvc foreach`, `dvc matrix` and
+//! `dvc vars` cases are now marked rejected. A templated stage keeps its
+//! command under `do:`, so an implementation that parses the keys it knows and
+//! drops the rest is left with a stage that has no command — one that runs
+//! nothing and is then reported current. Refusing the file is the only reading
+//! both sides can give that is true.
 //!
 //! Run: `cargo run -p tsp-core --example gen_vectors > tests/vectors.json`
 //! Every value in the output is derived from the inputs, so regenerating on an
@@ -384,6 +391,39 @@ fn pipeline_cases() -> Vec<(&'static str, &'static str)> {
             "schema from the future",
             "schema: 2\nstages:\n  a:\n    cmd: run\n",
         ),
+        // A templated stage keeps its command under `do:`. An implementation
+        // that drops the keys it does not expand is left with a stage that has
+        // no command, runs nothing, and then reports itself current — so both
+        // sides must refuse rather than read what they recognise.
+        (
+            "dvc foreach",
+            "stages:\n  train:\n    foreach: [a, b]\n    do:\n      cmd: train ${item}\n",
+        ),
+        (
+            "dvc matrix",
+            "stages:\n  train:\n    matrix:\n      model: [logreg, forest]\n    do:\n      cmd: train ${item.model}\n",
+        ),
+        (
+            "dvc vars",
+            "vars:\n  - params.yaml\nstages:\n  a:\n    cmd: run\n",
+        ),
+        (
+            "unknown stage key",
+            "stages:\n  a:\n    cmd: run\n    outz:\n      - m.bin\n",
+        ),
+        ("unknown top-level key", "stagez:\n  a:\n    cmd: run\n"),
+        // Nothing to run, and no command to compare, so it would go straight to
+        // current having never done anything.
+        (
+            "stage without a command",
+            "stages:\n  a:\n    outs:\n      - m.bin\n",
+        ),
+        // A name no renderer knows must not quietly become the default one.
+        (
+            "unknown plot template",
+            "stages:\n  eval:\n    cmd: run\n    plots:\n      - m.json:\n          template: confusionn\n",
+        ),
+        ("stages is not a map", "stages:\n  - a\n"),
     ]
 }
 
