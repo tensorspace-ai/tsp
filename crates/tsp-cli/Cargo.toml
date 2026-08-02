@@ -1,11 +1,21 @@
 [package]
-description = "Reproducible pipelines and experiments, versioned in git"
-name = "tsp"
+# The crate is `tsp-cli` because `tsp` on crates.io is taken by an abandoned
+# 2017 Tendermint crate that was never yanked. The binary is still `tsp`.
+name = "tsp-cli"
+description = "Reproducible pipelines and experiments, versioned in git — stages, staleness and experiments on top of git and Git LFS"
+readme = "README.md"
+keywords = ["pipeline", "reproducibility", "git-lfs", "mlops", "dvc"]
+categories = ["command-line-utilities", "development-tools"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "tsp"
+path = "src/main.rs"
 
 # No async runtime and no HTTP client: transfers belong to git-lfs now, so the
 # CLI spawns git and reads YAML and nothing else.

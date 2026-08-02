@@ -1,11 +1,15 @@
 [package]
-description = "Reproducible pipelines and experiments, versioned in git"
 name = "tsp-core"
+description = "The tsp.yaml and tsp.lock formats: parsing, staleness, metrics and plots — the library behind the tsp command"
+readme = "README.md"
+keywords = ["pipeline", "reproducibility", "git-lfs", "mlops", "dvc"]
+categories = ["development-tools", "parser-implementations"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 hex = "0.4.3"
