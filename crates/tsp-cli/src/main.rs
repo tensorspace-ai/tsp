@@ -25,7 +25,37 @@ use repo::Repo;
 #[command(
     name = "tsp",
     version,
-    about = "Reproducible pipelines and experiments, versioned in git"
+    about = "Reproducible pipelines and experiments, versioned in git",
+    long_about = "Reproducible pipelines and experiments, versioned in git.
+
+`tsp` records which stages produced which artifacts, whether that record still
+holds, and what a given experiment changed. It does not move your data: datasets
+go through an ordinary `filter=lfs` gitattribute, so git and git-lfs move the
+bytes. There is no database, no daemon and no server.
+
+Requires `git` and `git-lfs` on PATH.",
+    after_help = "\
+Getting started:
+  tsp init --lfs 'data/**' --lfs 'models/**'   set the repository up
+  $EDITOR tsp.yaml                             describe your stages
+  tsp repro                                    run what is out of date
+
+A minimal tsp.yaml:
+  stages:
+    train:
+      cmd: python src/train.py
+      deps:
+        - src/train.py
+        - data/prepared.csv
+      params:
+        - params.yaml:
+            - train.max_depth
+      outs:
+        - models/model.pkl
+      metrics:
+        - metrics.json
+
+The full format reference is in docs/format.md."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -53,7 +83,7 @@ enum Command {
     /// Show metric values, optionally against another revision
     Metrics {
         /// Revision to compare against, e.g. a branch, tag or experiment
-        #[arg(long)]
+        #[arg(long, value_name = "REV")]
         compare: Option<String>,
     },
     /// Render the pipeline's plots to a self-contained HTML page
@@ -67,6 +97,17 @@ enum Command {
     },
     /// Run and compare parameter experiments
     Exp(ExpArgs),
+    /// Print a shell completion script
+    Completions {
+        /// Shell to generate for
+        shell: clap_complete::Shell,
+    },
+    /// Print the man page in roff format
+    ///
+    /// Hidden because it exists for whoever builds the package, not for the
+    /// person using it.
+    #[command(hide = true)]
+    Man,
 }
 
 #[derive(Args)]
@@ -126,6 +167,16 @@ fn main() -> Result<()> {
             ExpCommand::Apply { name } => exp_apply(&cwd, &name),
             ExpCommand::Remove { names } => exp_remove(&cwd, &names),
         },
+        Command::Completions { shell } => {
+            let mut command = <Cli as clap::CommandFactory>::command();
+            clap_complete::generate(shell, &mut command, "tsp", &mut std::io::stdout());
+            Ok(())
+        }
+        Command::Man => {
+            clap_mangen::Man::new(<Cli as clap::CommandFactory>::command())
+                .render(&mut std::io::stdout())?;
+            Ok(())
+        }
     }
 }
 
@@ -149,12 +200,21 @@ fn init(cwd: &std::path::Path, patterns: &[String]) -> Result<()> {
 
     install_guard_hook(&git)?;
 
-    if patterns.is_empty() {
+    // Only advise this when there is nothing tracked yet. Re-running `tsp init`
+    // in a configured repository used to tell the reader to set up something
+    // they had already set up.
+    if patterns.is_empty() && !tracks_anything(&git) {
         println!("\nTell Git LFS what counts as data, e.g.:");
         println!("  git lfs track \"data/**\" \"models/**\"");
     }
     println!("\nDescribe your stages in tsp.yaml, then run `tsp repro`.");
     Ok(())
+}
+
+/// Whether `.gitattributes` already sends anything through the LFS filter.
+fn tracks_anything(git: &Git) -> bool {
+    std::fs::read_to_string(git.work_tree().join(".gitattributes"))
+        .is_ok_and(|text| text.contains("filter=lfs"))
 }
 
 /// Refuses to commit a large blob that no LFS filter claimed.
@@ -251,11 +311,20 @@ fn status(cwd: &std::path::Path) -> Result<()> {
         }
     }
 
-    println!("\n{} stage(s); {stale} need running.", statuses.len());
+    let total = statuses.len();
+    println!(
+        "\n{total} {}; {stale} {} running.",
+        plural(total, "stage", "stages"),
+        plural(stale, "needs", "need")
+    );
     if stale > 0 {
         println!("Bring them up to date with `tsp repro`.");
     }
     Ok(())
+}
+
+fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
+    if count == 1 { one } else { many }
 }
 
 fn show_metrics(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
@@ -299,11 +368,17 @@ fn print_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &
             (Some(d), None) => metrics::format_delta(d),
             (None, _) => String::new(),
         };
+        // Trimmed: a row with no delta would otherwise end in the padding the
+        // column left behind.
         println!(
-            "  {:<key_width$}  {:>12}  {:>12}  {delta}",
-            row.key,
-            row.current.as_deref().unwrap_or("-"),
-            row.compare.as_deref().unwrap_or("-"),
+            "{}",
+            format!(
+                "  {:<key_width$}  {:>12}  {:>12}  {delta}",
+                row.key,
+                row.current.as_deref().unwrap_or("-"),
+                row.compare.as_deref().unwrap_or("-"),
+            )
+            .trim_end()
         );
     }
 }

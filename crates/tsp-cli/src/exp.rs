@@ -54,6 +54,8 @@ pub fn run(
         }
     }
 
+    require_declared_params(repo, overrides)?;
+
     let head = repo
         .git()
         .rev_parse("HEAD")
@@ -106,6 +108,43 @@ fn record(
     repo.git()
         .update_ref(&experiment.ref_name(), &experiment.commit)?;
     Ok(experiment)
+}
+
+/// Refuses an override naming a parameter no stage declares.
+///
+/// Staleness is decided from the keys stages list under `params:`, so setting
+/// anything else moves a value nothing is watching: no stage reruns, and the
+/// experiment ends at "nothing to run" — a message about the pipeline for what
+/// is really a typo in the flag.
+fn require_declared_params(repo: &Repo, overrides: &[Override]) -> Result<()> {
+    let declared: Vec<(&str, &str)> = repo
+        .pipeline
+        .stages
+        .values()
+        .flat_map(|stage| &stage.params)
+        .flat_map(|reference| {
+            reference
+                .keys
+                .iter()
+                .map(|key| (reference.file.as_str(), key.as_str()))
+        })
+        .collect();
+
+    for over in overrides {
+        if !declared
+            .iter()
+            .any(|(file, key)| *file == over.file && *key == over.key)
+        {
+            bail!(
+                "no stage reads {} from {}; `--set` only moves parameters a stage \
+                 declares under `params:`, because those are the ones staleness is \
+                 decided from.",
+                over.key,
+                over.file
+            );
+        }
+    }
+    Ok(())
 }
 
 fn apply_overrides(repo: &Repo, overrides: &[Override]) -> Result<()> {

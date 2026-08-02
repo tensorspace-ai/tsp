@@ -461,6 +461,19 @@ fn a_stage_that_skips_its_declared_output_stops_the_run() {
     );
 }
 
+/// Setting a key nothing declares used to end at "nothing to run", which
+/// blames the pipeline for what is a typo in the flag.
+#[test]
+fn an_override_naming_an_undeclared_parameter_is_refused() {
+    let f = Fixture::new();
+
+    let out = f.tsp(&["exp", "run", "--set", "train.no_such_key=3"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no_such_key"), "{stderr}");
+    assert!(stderr.contains("params.yaml"), "{stderr}");
+}
+
 /// A name is refused on its spelling alone, so checking it after the run costs
 /// the whole run to learn something knowable before it started.
 #[test]
