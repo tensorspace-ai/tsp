@@ -479,35 +479,31 @@ fn exp_list(cwd: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
+    // Every metric is read once and kept. Projecting onto the columns has to
+    // wait until they are all known — a key only the last experiment produced
+    // is still a column for every row — but that is a second pass over what is
+    // already in memory, not a second pass over git.
+    let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
+    let mut read: Vec<(String, Vec<metrics::Metric>)> = Vec::with_capacity(experiments.len() + 1);
+    read.push(("HEAD".to_owned(), baseline));
+    for experiment in &experiments {
+        read.push((experiment.name.clone(), exp::metrics_of(&repo, experiment)?));
+    }
+
     // One column per metric key, so runs line up under the same headings.
     let mut keys: Vec<String> = Vec::new();
-    let mut rows: Vec<(String, Vec<Metricish>)> = Vec::new();
-
-    let baseline = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some("HEAD"))?;
-    for metric in &baseline {
-        if !keys.contains(&metric.key) {
-            keys.push(metric.key.clone());
-        }
-    }
-    rows.push(("HEAD".to_owned(), values_for(&keys, &baseline)));
-
-    for experiment in &experiments {
-        let produced = exp::metrics_of(&repo, experiment)?;
-        for metric in &produced {
+    for (_, produced) in &read {
+        for metric in produced {
             if !keys.contains(&metric.key) {
                 keys.push(metric.key.clone());
             }
         }
-        rows.push((experiment.name.clone(), values_for(&keys, &produced)));
     }
 
-    // Re-resolve now that every key is known, so late columns are not blank.
-    let mut resolved: Vec<(String, Vec<Metricish>)> = Vec::with_capacity(rows.len());
-    resolved.push(("HEAD".to_owned(), values_for(&keys, &baseline)));
-    for experiment in &experiments {
-        let produced = exp::metrics_of(&repo, experiment)?;
-        resolved.push((experiment.name.clone(), values_for(&keys, &produced)));
-    }
+    let resolved: Vec<(String, Vec<Metricish>)> = read
+        .iter()
+        .map(|(name, produced)| (name.clone(), values_for(&keys, produced)))
+        .collect();
 
     let name_width = resolved
         .iter()

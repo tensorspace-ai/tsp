@@ -856,3 +856,53 @@ fn repro_explains_an_unread_dvc_lock_before_it_runs_anything() {
         "the run still reports what it did:\n{stdout}"
     );
 }
+
+/// A metric only one experiment produced is still a column for every row.
+///
+/// The columns cannot be known until every experiment has been read, so the
+/// projection onto them has to happen afterwards. Getting this wrong leaves the
+/// baseline blank under any key it does not itself carry — which reads as "the
+/// baseline scored nothing" rather than "this metric is new".
+#[test]
+fn a_metric_only_one_experiment_produced_is_a_column_for_every_row() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "baseline"]);
+
+    // A second run whose train stage also writes a key the baseline never had.
+    f.write_exec(
+        "scripts/train.sh",
+        &format!("{TRAIN}printf '{{\"extra\": 1}}\\n' > extra.json\n"),
+    );
+    f.write(
+        "tsp.yaml",
+        &PIPELINE.replace(
+            "      - metrics.json:\n          cache: false\n",
+            "      - metrics.json:\n          cache: false\n      - extra.json:\n          cache: false\n",
+        ),
+    );
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-qm", "measure one more thing"]);
+    f.tsp_ok(&["exp", "run", "--set", "train.factor=10", "--name", "tenfold"]);
+
+    let listed = f.tsp_ok(&["exp", "list"]);
+    assert!(listed.contains("extra"), "the late key is a column:\n{listed}");
+
+    // `extra` is the last column, so the baseline's last cell is the one it
+    // never wrote: a dash, not a blank the reader would take for a zero.
+    let header = listed.lines().next().expect("a header row");
+    assert_eq!(
+        header.split_whitespace().last(),
+        Some("extra"),
+        "extra should be the late column:\n{listed}"
+    );
+    let head_row = listed
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some("HEAD"))
+        .expect("a baseline row");
+    assert_eq!(
+        head_row.split_whitespace().last(),
+        Some("-"),
+        "the baseline reads as absent under a key it never wrote:\n{listed}"
+    );
+}
