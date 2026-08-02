@@ -883,10 +883,20 @@ fn a_metric_only_one_experiment_produced_is_a_column_for_every_row() {
     );
     f.git(&["add", "-A"]);
     f.git(&["commit", "-qm", "measure one more thing"]);
-    f.tsp_ok(&["exp", "run", "--set", "train.factor=10", "--name", "tenfold"]);
+    f.tsp_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
 
     let listed = f.tsp_ok(&["exp", "list"]);
-    assert!(listed.contains("extra"), "the late key is a column:\n{listed}");
+    assert!(
+        listed.contains("extra"),
+        "the late key is a column:\n{listed}"
+    );
 
     // `extra` is the last column, so the baseline's last cell is the one it
     // never wrote: a dash, not a blank the reader would take for a zero.
