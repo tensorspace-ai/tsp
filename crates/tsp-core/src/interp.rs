@@ -204,27 +204,27 @@ fn render_once(text: &str, vars: &Vars, path: &str, location: &str) -> Result<(S
             i += 3;
             continue;
         }
-        if text[i..].starts_with("${") {
-            if let Some(close) = text[i + 2..].find('}') {
-                let name = &text[i + 2..i + 2 + close];
-                let value = vars
-                    .lookup(name)
-                    .ok_or_else(|| InterpError::UnknownVariable {
-                        path: path.to_owned(),
-                        location: location.to_owned(),
-                        name: name.to_owned(),
-                    })?;
-                let rendered = scalar(value).map_err(|kind| InterpError::NotAValue {
+        if text[i..].starts_with("${")
+            && let Some(close) = text[i + 2..].find('}')
+        {
+            let name = &text[i + 2..i + 2 + close];
+            let value = vars
+                .lookup(name)
+                .ok_or_else(|| InterpError::UnknownVariable {
                     path: path.to_owned(),
                     location: location.to_owned(),
                     name: name.to_owned(),
-                    kind,
                 })?;
-                out.push_str(&rendered);
-                substituted = true;
-                i += 2 + close + 1;
-                continue;
-            }
+            let rendered = scalar(value).map_err(|kind| InterpError::NotAValue {
+                path: path.to_owned(),
+                location: location.to_owned(),
+                name: name.to_owned(),
+                kind,
+            })?;
+            out.push_str(&rendered);
+            substituted = true;
+            i += 2 + close + 1;
+            continue;
         }
         let ch = text[i..].chars().next().expect("in bounds");
         out.push(ch);
