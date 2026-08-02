@@ -49,6 +49,15 @@ pub enum PipelineError {
     },
     #[error("{path}: stage {name:?} has no cmd, so there is nothing to bring up to date")]
     NoCommand { path: String, name: String },
+    #[error(
+        "{path}: {location} names an unknown plot template {template:?}; known ones are {known}"
+    )]
+    UnknownTemplate {
+        path: String,
+        location: String,
+        template: String,
+        known: String,
+    },
     #[error("{path}: {location} should be {want}, but is {got}")]
     WrongShape {
         path: String,
@@ -146,14 +155,15 @@ fn check_shape(text: &str, path: &str) -> Result<()> {
             return Err(unknown("the pipeline".to_owned(), key, &PIPELINE_KEYS));
         }
     }
-    if let Some(plots) = top.get("plots")
-        && !plots.is_array()
-    {
-        return Err(wrong(
-            "plots",
-            "a list of files, or of single-key entries carrying options",
-            plots,
-        ));
+    if let Some(plots) = top.get("plots") {
+        let Some(entries) = plots.as_array() else {
+            return Err(wrong(
+                "plots",
+                "a list of files, or of single-key entries carrying options",
+                plots,
+            ));
+        };
+        check_templates(entries, "plots", path)?;
     }
     let Some(stages) = top.get("stages") else {
         return Ok(());
@@ -172,6 +182,39 @@ fn check_shape(text: &str, path: &str) -> Result<()> {
         for key in stage.keys() {
             if !STAGE_KEYS.contains(&key.as_str()) {
                 return Err(unknown(format!("stage {name:?}"), key, &STAGE_KEYS));
+            }
+        }
+        if let Some(entries) = stage.get("plots").and_then(serde_json::Value::as_array) {
+            check_templates(entries, &format!("stage {name:?}"), path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a `template:` no renderer knows.
+///
+/// An unrecognised name used to fall back to `linear`, so a misspelled
+/// `confusion` drew a line chart of a confusion matrix and said nothing.
+fn check_templates(entries: &[serde_json::Value], location: &str, path: &str) -> Result<()> {
+    for entry in entries {
+        let Some(options) = entry.as_object() else {
+            continue; // a bare path carries no options
+        };
+        for options in options.values() {
+            let Some(name) = options
+                .as_object()
+                .and_then(|o| o.get("template"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if plots::Template::parse(name).is_none() {
+                return Err(PipelineError::UnknownTemplate {
+                    path: path.to_owned(),
+                    location: location.to_owned(),
+                    template: name.to_owned(),
+                    known: plots::Template::NAMES.join(", "),
+                });
             }
         }
     }
@@ -713,6 +756,30 @@ stages:
         let text = err.to_string();
         assert!(text.contains("stagez"), "{text}");
         assert!(text.contains("stages"), "lists the known keys: {text}");
+    }
+
+    /// A misspelled `confusion` used to fall back to `linear`, drawing a line
+    /// chart of a confusion matrix without a word about it.
+    #[test]
+    fn an_unknown_plot_template_is_refused() {
+        let err = Pipeline::parse(
+            "stages:\n  e:\n    cmd: x\n    plots:\n      - m.json:\n          template: confusionn\n",
+            "tsp.yaml",
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("confusionn"), "{text}");
+        assert!(text.contains("confusion_normalized"), "lists them: {text}");
+    }
+
+    #[test]
+    fn every_documented_template_name_parses() {
+        for name in plots::Template::NAMES {
+            assert!(
+                plots::Template::parse(name).is_some(),
+                "{name} is listed but not parsed"
+            );
+        }
     }
 
     #[test]

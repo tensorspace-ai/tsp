@@ -34,6 +34,19 @@ pub enum Template {
 }
 
 impl Template {
+    /// Every name `parse` accepts, for error messages and documentation.
+    pub const NAMES: [&'static str; 9] = [
+        "linear",
+        "simple",
+        "scatter",
+        "scatter_jitter",
+        "smooth",
+        "confusion",
+        "confusion_normalized",
+        "bar_horizontal",
+        "bar_horizontal_sorted",
+    ];
+
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "linear" => Self::Linear,

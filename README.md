@@ -41,6 +41,27 @@ Parameters are recorded as **values**, not as the file's id. Several stages
 usually share one `params.yaml`, and a stage that reads only `train.max_depth`
 must not go stale because a sibling's key moved.
 
+## Installing
+
+`tsp` needs `git` and `git-lfs` on your PATH, and `git lfs install` to have been
+run once for your user.
+
+```sh
+cargo install tsp-cli          # the binary is `tsp`
+```
+
+The crate is `tsp-cli` because the name `tsp` on crates.io belongs to an
+unrelated crate last published in 2017.
+
+Prebuilt binaries for macOS, Linux and Windows are attached to each
+[release](https://github.com/tensorspace-ai/tsp/releases). Building from source
+needs Rust 1.85 or newer.
+
+```sh
+tsp --version
+tsp completions zsh > ~/.zfunc/_tsp    # optional
+```
+
 ## Using it
 
 ```sh
@@ -51,9 +72,39 @@ git add -A && git commit -m 'add a pipeline'
 git push
 ```
 
+A pipeline is a `tsp.yaml`:
+
+```yaml
+stages:
+  prepare:
+    cmd: python src/prepare.py
+    deps:
+      - src/prepare.py
+      - data/raw.csv
+    params:
+      - prepare.seed
+    outs:
+      - data/prepared.csv
+  train:
+    cmd: python src/train.py
+    deps:
+      - src/train.py
+      - data/prepared.csv
+    params:
+      - train.max_depth
+    outs:
+      - models/model.pkl
+    metrics:
+      - metrics.json
+```
+
+Every field is documented in [docs/format.md](docs/format.md).
+
 `tsp init` writes the `.gitattributes` entries and installs a `pre-commit` hook
-that refuses a large blob no LFS filter claimed — the mistake you can only see
-once it is in history.
+that refuses a blob over 1 MiB which no LFS filter claimed — the mistake you can
+only see once it is in history. A repository that already has its own
+`pre-commit` hook keeps it, and `init` says so rather than replacing it, so
+under husky or pre-commit that guard is not installed.
 
 Retuning one model in a pipeline that trains three, where all three read the
 same `models.yaml`:
@@ -66,7 +117,7 @@ $ tsp status
   train_boosting  current
   evaluate        current
 
-5 stage(s); 1 need running.
+5 stages; 1 needs running.
 Bring them up to date with `tsp repro`.
 ```
 
@@ -75,12 +126,16 @@ Staleness is per key, not per file, so the other two models stay current.
 | Command | What it does |
 | --- | --- |
 | `tsp init --lfs <pattern>` | Set the repository up for `tsp` and Git LFS |
-| `tsp repro [stage]` | Run the stages that are out of date and update the lock |
-| `tsp status` | Show which stages are current, stale or new, and why |
+| `tsp repro [stage] [--force]` | Run the stages that are out of date and update the lock |
+| `tsp status` | Show which stages are current, stale, new or unknown, and why |
 | `tsp metrics [--compare <rev>]` | Show metric values, optionally against another revision |
-| `tsp plots [revisions...]` | Render the pipeline's plots to a self-contained HTML page |
-| `tsp exp run --set k=v` | Run with parameters overridden and record the result |
+| `tsp plots [revisions...] [--out <dir>]` | Render the pipeline's plots to a self-contained HTML page |
+| `tsp exp run --set k=v [--name <name>] [--force]` | Run with parameters overridden and record the result |
 | `tsp exp list \| show \| apply \| remove` | Work with recorded experiments |
+| `tsp completions <shell>` | Print a shell completion script |
+
+`tsp plots` writes to `tsp_plots/`, and drops a `.gitignore` beside the page so
+the generated HTML stays out of history.
 
 ## Experiments are commits
 
@@ -95,24 +150,40 @@ fetched by the same commands as anything else, and comparing two experiments is
 comparing two commits.
 
 They live outside `refs/heads/` so they never appear as branches, and outside
-`refs/tags/` so they are not pushed by default.
+`refs/tags/` so they are not pushed by default. Share one explicitly:
+
+```sh
+git push origin 'refs/tsp/exps/*:refs/tsp/exps/*'
+```
 
 ## Relationship to DVC
 
-The pipeline format is DVC's shape, and `dvc.yaml` is read directly. What is
-missing is DVC's data-management layer: no cache directory, no remotes, no
-`dvc push`. Git LFS does that job and does it for every git client, not just
-this one.
+The pipeline format is DVC's shape, and `dvc.yaml` is read directly — the same
+stage keys, the same polymorphic spellings. What is missing is DVC's
+data-management layer: no cache directory, no remotes, no `dvc push`. Git LFS
+does that job and does it for every git client, not just this one.
 
-`tsp.lock` is not `dvc.lock`. It is schema 3 and records object ids rather than
-content hashes, which is what makes the staleness check cheap.
+Templated stages are the gap worth knowing about. `foreach`, `matrix`, `vars`,
+`frozen`, `always_changed` and `artifacts` are **refused**, not ignored, because
+a `foreach` stage keeps its command under `do:` — dropping it would leave a
+stage that runs nothing and then reports itself up to date. Write those stages
+out, or keep running that pipeline with `dvc`.
+
+`dvc.lock` is not read either, so a DVC repository's first `tsp repro` reports
+every stage new. `tsp.lock` is not `dvc.lock`: it is schema 3 and records object
+ids rather than content hashes, which is what makes the staleness check cheap.
+
+The [format reference](docs/format.md) lists every supported field.
 
 ## Building
 
 ```sh
 cargo build --release        # target/release/tsp
-cargo test --workspace
+./run-tests.sh               # fmt, clippy, tests, and the vectors
 ```
+
+The end-to-end tests drive a real repository through real `git` and `git-lfs`,
+so both must be installed and `git lfs install` must have been run.
 
 `tests/vectors.json` is generated and committed. A second implementation reads
 these formats to render them in a browser, so the two agree by replaying the
