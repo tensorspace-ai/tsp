@@ -143,22 +143,26 @@ Having no field to put that verdict in is what stops it being published.
 {
   "schema": 1,
   "kind": "exp_list",
-  "keys": ["accuracy", "lines"],
+  "keys": [
+    { "file": "metrics.json", "key": "accuracy" },
+    { "file": "metrics.json", "key": "lines" }
+  ],
   "rows": [
     { "name": "HEAD", "baseline": true,
-      "metrics": { "accuracy": { "value": 12, "display": "12" },
-                   "lines":    { "value": 6,  "display": "6" } } },
+      "metrics": [ { "value": 12, "display": "12" }, { "value": 6, "display": "6" } ] },
     { "name": "tenfold", "baseline": false,
-      "metrics": { "accuracy": { "value": 60, "display": "60" },
-                   "lines":    null } }
+      "metrics": [ { "value": 60, "display": "60" }, null ] }
   ]
 }
 ```
 
 `keys` is the column order, so a consumer reproduces the table exactly. Each
-row's `metrics` is a map rather than a positional list, so a row reads on its
-own instead of by cross-referencing `keys`; a `null` cell is the one the table
-draws as `-`.
+entry carries its `file` as well as its `key`, because two metrics files may use
+the same dotted key for two different measurements — a column is the pair, not
+the name.
+
+Each row's `metrics` is positional, matching `keys` index for index. A `null`
+cell is the one the table draws as `-`.
 
 The first row is the baseline, and `baseline` marks it rather than leaving it to
 be inferred from the name. Experiments follow, newest first.

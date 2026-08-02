@@ -295,8 +295,10 @@ pub fn comparison_document<'a>(
 pub struct ExpListDoc<'a> {
     schema: u32,
     kind: &'static str,
-    /// The column order, so a consumer reproduces the table exactly.
-    keys: &'a [String],
+    /// The column order, so a consumer reproduces the table exactly. Each entry
+    /// carries its file as well as its key, because two metrics files may use
+    /// the same dotted key for different measurements.
+    keys: &'a [ColumnKey],
     rows: Vec<ExpRowOut<'a>>,
 }
 
@@ -304,10 +306,11 @@ pub struct ExpListDoc<'a> {
 struct ExpRowOut<'a> {
     name: &'a str,
     baseline: bool,
-    /// A map rather than a positional list, so a row reads on its own instead
-    /// of by cross-referencing `keys`. A null cell is the one the table draws
-    /// as a dash.
-    metrics: std::collections::BTreeMap<&'a str, Option<CellOut<'a>>>,
+    /// Positional, matching `keys`. A map keyed by name alone could not
+    /// represent two files sharing a dotted key, which is the collision this
+    /// table now distinguishes. A null cell is the one the table draws as a
+    /// dash.
+    metrics: Vec<Option<CellOut<'a>>>,
 }
 
 #[derive(Serialize)]
@@ -317,7 +320,7 @@ struct CellOut<'a> {
 }
 
 pub fn exp_list_document<'a>(
-    keys: &'a [String],
+    keys: &'a [ColumnKey],
     read: &'a [(String, Vec<metrics::Metric>)],
 ) -> ExpListDoc<'a> {
     ExpListDoc {
@@ -332,12 +335,14 @@ pub fn exp_list_document<'a>(
                 baseline: i == 0,
                 metrics: keys
                     .iter()
-                    .map(|key| {
-                        let cell = produced.iter().find(|m| &m.key == key).map(|m| CellOut {
-                            value: &m.value,
-                            display: m.display(),
-                        });
-                        (key.as_str(), cell)
+                    .map(|column| {
+                        produced
+                            .iter()
+                            .find(|m| m.file == column.file && m.key == column.key)
+                            .map(|m| CellOut {
+                                value: &m.value,
+                                display: m.display(),
+                            })
                     })
                     .collect(),
             })
@@ -347,16 +352,42 @@ pub fn exp_list_document<'a>(
 
 // ----------------------------------------------------------------- text ----
 
+/// One column of the experiments table: a metrics file and a key within it.
+///
+/// Both, because two metrics files may carry the same dotted key and they are
+/// two different measurements. Matching on the key alone silently reported one
+/// of them under the other's column.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+pub struct ColumnKey {
+    pub file: String,
+    pub key: String,
+}
+
+/// Column headings: the metric's name, qualified by its file only where two
+/// columns would otherwise read alike. Qualifying every heading would widen the
+/// common table for a collision almost no pipeline has.
+pub fn headings(keys: &[ColumnKey]) -> Vec<String> {
+    keys.iter()
+        .map(|column| {
+            if keys.iter().filter(|other| other.key == column.key).count() > 1 {
+                format!("{}:{}", column.file, column.key)
+            } else {
+                column.key.clone()
+            }
+        })
+        .collect()
+}
+
 /// A metric value already rendered for the table, or "-" when absent.
 pub struct Metricish(pub String);
 
-pub fn values_for(keys: &[String], metrics: &[metrics::Metric]) -> Vec<Metricish> {
+pub fn values_for(keys: &[ColumnKey], metrics: &[metrics::Metric]) -> Vec<Metricish> {
     keys.iter()
-        .map(|key| {
+        .map(|column| {
             Metricish(
                 metrics
                     .iter()
-                    .find(|m| &m.key == key)
+                    .find(|m| m.file == column.file && m.key == column.key)
                     .map_or_else(|| "-".to_owned(), |m| m.display()),
             )
         })

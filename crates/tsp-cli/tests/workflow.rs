@@ -1168,21 +1168,69 @@ fn exp_list_json_lines_experiments_up_under_the_same_metric_keys() {
         serde_json::from_str(&f.tsp_ok(&["exp", "list", "--json"])).unwrap();
     assert_eq!(doc["kind"], "exp_list");
 
-    let keys: Vec<&str> = doc["keys"]
-        .as_array()
-        .unwrap()
+    // Each column names its file as well as its key: two metrics files may use
+    // the same dotted key for different measurements.
+    let keys = doc["keys"].as_array().unwrap();
+    let accuracy = keys
         .iter()
-        .map(|k| k.as_str().unwrap())
-        .collect();
-    assert!(keys.contains(&"accuracy"), "{doc}");
+        .position(|k| k["key"] == "accuracy")
+        .expect("an accuracy column");
+    assert_eq!(keys[accuracy]["file"], "metrics.json");
 
     let rows = doc["rows"].as_array().unwrap();
     assert_eq!(rows[0]["name"], "HEAD");
     assert_eq!(rows[0]["baseline"], true);
     let tenfold = rows.iter().find(|r| r["name"] == "tenfold").unwrap();
     assert_eq!(tenfold["baseline"], false);
-    assert_eq!(tenfold["metrics"]["accuracy"]["value"], 60);
-    assert_eq!(tenfold["metrics"]["accuracy"]["display"], "60");
+    // Cells are positional, matching keys.
+    assert_eq!(tenfold["metrics"][accuracy]["value"], 60);
+    assert_eq!(tenfold["metrics"][accuracy]["display"], "60");
+}
+
+/// Two metrics files carrying the same dotted key are two measurements. Keying
+/// a column on the name alone collapsed them, and the first match won — so one
+/// file's number was reported under both headings.
+#[test]
+fn two_metrics_files_sharing_a_key_are_two_columns() {
+    let f = Fixture::new();
+    f.write_exec(
+        "scripts/train.sh",
+        &format!(
+            "{TRAIN}printf '{{\"accuracy\": 1}}\n' > other.json
+"
+        ),
+    );
+    f.write(
+        "tsp.yaml",
+        &PIPELINE.replace(
+            "      - metrics.json:\n          cache: false\n",
+            "      - metrics.json:\n          cache: false\n      - other.json:\n          cache: false\n",
+        ),
+    );
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-qm", "two metrics files"]);
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qam", "baseline"]);
+    f.tsp_ok(&[
+        "exp",
+        "run",
+        "--set",
+        "train.factor=10",
+        "--name",
+        "tenfold",
+    ]);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&f.tsp_ok(&["exp", "list", "--json"])).unwrap();
+    let keys = doc["keys"].as_array().unwrap();
+    let accuracy: Vec<&serde_json::Value> =
+        keys.iter().filter(|k| k["key"] == "accuracy").collect();
+    assert_eq!(accuracy.len(), 2, "one column per file: {doc}");
+
+    // And the table qualifies both headings, since the bare name is ambiguous.
+    let listed = f.tsp_ok(&["exp", "list"]);
+    assert!(listed.contains("metrics.json:accuracy"), "{listed}");
+    assert!(listed.contains("other.json:accuracy"), "{listed}");
 }
 
 #[test]

@@ -571,15 +571,25 @@ fn exp_list(cwd: &std::path::Path, format: Format) -> Result<()> {
         read.push((experiment.name.clone(), exp::metrics_of(&repo, experiment)?));
     }
 
-    // One column per metric key, so runs line up under the same headings.
-    let mut keys: Vec<String> = Vec::new();
+    // One column per metric, keyed by the file it came from as well as its
+    // name. Keying on the name alone collapsed two files that happen to share a
+    // dotted key into one column, and the first match won — so a pipeline
+    // writing `accuracy` to two metrics files reported one of them under both.
+    let mut keys: Vec<output::ColumnKey> = Vec::new();
     for (_, produced) in &read {
         for metric in produced {
-            if !keys.contains(&metric.key) {
-                keys.push(metric.key.clone());
+            let column = output::ColumnKey {
+                file: metric.file.clone(),
+                key: metric.key.clone(),
+            };
+            if !keys.contains(&column) {
+                keys.push(column);
             }
         }
     }
+    // The heading is the metric's name, and gains its file only where two
+    // columns would otherwise read alike.
+    let headings = output::headings(&keys);
 
     if format.is_json() {
         return output::emit(&output::exp_list_document(&keys, &read));
@@ -596,22 +606,22 @@ fn exp_list(cwd: &std::path::Path, format: Format) -> Result<()> {
         .chain([4])
         .max()
         .unwrap();
-    let widths: Vec<usize> = keys
+    let widths: Vec<usize> = headings
         .iter()
         .enumerate()
-        .map(|(i, key)| {
+        .map(|(i, heading)| {
             resolved
                 .iter()
                 .map(|(_, vals)| vals[i].0.len())
-                .chain([key.len()])
+                .chain([heading.len()])
                 .max()
                 .unwrap()
         })
         .collect();
 
     print!("  {:<name_width$}", "NAME");
-    for (key, width) in keys.iter().zip(&widths) {
-        print!("  {key:>width$}");
+    for (heading, width) in headings.iter().zip(&widths) {
+        print!("  {heading:>width$}");
     }
     println!();
 
