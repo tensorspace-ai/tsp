@@ -9,6 +9,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::git::{Git, GitError};
+use crate::pipeline::Pipeline;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ParamsError {
     #[error("cannot read {path}")]
@@ -30,6 +33,77 @@ pub enum ParamsError {
 }
 
 type Result<T> = std::result::Result<T, ParamsError>;
+
+/// A parameter value read for display.
+///
+/// Aliased to `metrics::Metric` deliberately: to a comparison a parameter and a
+/// metric are the same thing — a file, a dotted key and a scalar — and
+/// `tsp params --compare` must line its columns up exactly as
+/// `tsp metrics --compare` does. Sharing the type is what stops the two
+/// drifting apart.
+pub type Param = crate::metrics::Metric;
+
+/// Reads the parameter values the pipeline's stages declare, at the working
+/// tree when `rev` is `None` or at that revision otherwise.
+///
+/// Only the keys stages declare, never every key in the file. Those are the
+/// ones staleness is decided from, and a listing that showed more would
+/// disagree with `tsp status` about which parameters matter.
+///
+/// A file that is absent or unparseable contributes nothing rather than
+/// failing, matching `metrics::read` and deliberately unlike `Repo::param_cache`,
+/// which errors. The difference is what each is for: staleness must not be
+/// decided from a file that could not be read, but a comparison against a
+/// three-month-old commit must not fail because that commit had a typo.
+pub fn read(
+    git: &Git,
+    root: &Path,
+    pipeline: &Pipeline,
+    rev: Option<&str>,
+) -> std::result::Result<Vec<Param>, GitError> {
+    let mut out: Vec<Param> = Vec::new();
+    let mut files: BTreeMap<String, Option<Params>> = BTreeMap::new();
+
+    for stage in pipeline.stages.values() {
+        for reference in &stage.params {
+            // Several stages usually read the same file; read it once.
+            if !files.contains_key(&reference.file) {
+                let raw: Option<Vec<u8>> = match rev {
+                    Some(rev) => git.read_blob_at(rev, &reference.file)?,
+                    None => std::fs::read(root.join(&reference.file)).ok(),
+                };
+                let parsed = raw.and_then(|raw| {
+                    Params::parse(&String::from_utf8_lossy(&raw), &reference.file).ok()
+                });
+                files.insert(reference.file.clone(), parsed);
+            }
+            let Some(Some(params)) = files.get(&reference.file) else {
+                continue;
+            };
+
+            for key in &reference.keys {
+                let Some(value) = params.get(key) else {
+                    continue;
+                };
+                // Two stages may declare the same key; it is one column.
+                if out
+                    .iter()
+                    .any(|p| p.file == reference.file && &p.key == key)
+                {
+                    continue;
+                }
+                out.push(Param {
+                    file: reference.file.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                });
+            }
+        }
+    }
+
+    out.sort_by(|a, b| a.file.cmp(&b.file).then(a.key.cmp(&b.key)));
+    Ok(out)
+}
 
 /// One parameter file, parsed.
 #[derive(Clone, Debug, Default)]
@@ -255,5 +329,90 @@ mod tests {
         let grouped = by_file(&list);
         assert_eq!(grouped["a.yaml"].len(), 2);
         assert_eq!(grouped["b.yaml"].len(), 1);
+    }
+
+    fn pipeline_with(params: &str) -> crate::pipeline::Pipeline {
+        crate::pipeline::Pipeline::parse(
+            &format!("stages:\n  train:\n    cmd: run\n    params:\n{params}"),
+            "tsp.yaml",
+        )
+        .unwrap()
+    }
+
+    /// A working-tree read needs a Git only for the revision case, so these
+    /// drive `read` with `rev: None` against a temp directory.
+    fn read_workspace(root: &Path, pipeline: &crate::pipeline::Pipeline) -> Vec<Param> {
+        let git = Git::discover(root).expect("a repository");
+        read(&git, root, pipeline, None).unwrap()
+    }
+
+    fn repo_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        for (name, body) in files {
+            std::fs::write(dir.path().join(name), body).unwrap();
+        }
+        dir
+    }
+
+    /// The listing shows what staleness is decided from, and nothing else. A
+    /// key no stage declares is not a parameter of this pipeline, however much
+    /// it looks like one sitting in the same file.
+    #[test]
+    fn reads_only_the_keys_stages_declare() {
+        let dir = repo_with(&[(
+            "params.yaml",
+            "train:\n  depth: 4\n  seed: 42\nunused:\n  thing: 9\n",
+        )]);
+        let root = dir.path().canonicalize().unwrap();
+        let pipeline = pipeline_with("      - params.yaml:\n          - train.depth\n");
+
+        let got = read_workspace(&root, &pipeline);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].key, "train.depth");
+        assert_eq!(got[0].value, serde_json::json!(4));
+    }
+
+    #[test]
+    fn a_key_missing_from_the_file_is_absent_rather_than_null() {
+        let dir = repo_with(&[("params.yaml", "train:\n  depth: 4\n")]);
+        let root = dir.path().canonicalize().unwrap();
+        let pipeline = pipeline_with(
+            "      - params.yaml:\n          - train.depth\n          - train.gone\n",
+        );
+
+        let got = read_workspace(&root, &pipeline);
+        assert_eq!(got.len(), 1, "an absent key contributes no row: {got:?}");
+    }
+
+    /// Failing here would make a comparison against an old commit impossible
+    /// because that commit happened to have a typo.
+    #[test]
+    fn an_unparseable_file_yields_nothing_rather_than_failing() {
+        let dir = repo_with(&[("params.yaml", "train: [unclosed\n  : :\n")]);
+        let root = dir.path().canonicalize().unwrap();
+        let pipeline = pipeline_with("      - params.yaml:\n          - train.depth\n");
+
+        assert!(read_workspace(&root, &pipeline).is_empty());
+    }
+
+    #[test]
+    fn values_sort_by_file_then_key() {
+        let dir = repo_with(&[("params.yaml", "b: 2\na: 1\n"), ("models.yaml", "z: 3\n")]);
+        let root = dir.path().canonicalize().unwrap();
+        let pipeline = pipeline_with(
+            "      - params.yaml:\n          - b\n          - a\n      - models.yaml:\n          - z\n",
+        );
+
+        let got = read_workspace(&root, &pipeline);
+        let names: Vec<String> = got
+            .iter()
+            .map(|p| format!("{}:{}", p.file, p.key))
+            .collect();
+        assert_eq!(names, ["models.yaml:z", "params.yaml:a", "params.yaml:b"]);
     }
 }
