@@ -58,6 +58,23 @@ pub const FILE_NAME: &str = "tsp.lock";
 /// guess. Version 3 is the first that is not DVC-compatible.
 pub const SCHEMA: u32 = 3;
 
+/// DVC's lock file. Never read, and named here only so a reader can be told why
+/// its stages report new.
+///
+/// DVC records a content hash per output; this format records a git object id
+/// per dependency. Neither can be derived from the other without reading the
+/// data, which is the cost this format exists to avoid.
+pub const DVC_FILE_NAME: &str = "dvc.lock";
+
+/// Whether the repository carries a DVC lock and none of its own.
+///
+/// The one state in which every stage reports `new` for a reason the user did
+/// not cause and cannot see. It resolves itself: the first `tsp repro` writes
+/// `tsp.lock` and leaves `dvc.lock` alone.
+pub fn dvc_lock_is_unread(root: &std::path::Path) -> bool {
+    root.join(DVC_FILE_NAME).is_file() && !root.join(FILE_NAME).is_file()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Lock {
     pub schema: u32,
@@ -221,5 +238,21 @@ mod tests {
         let back = Lock::parse(&lock.to_yaml().unwrap(), "tsp.lock").unwrap();
         let paths: Vec<&str> = back.stages["a"].deps.keys().map(String::as_str).collect();
         assert_eq!(paths, ["z.py", "a.csv"]);
+    }
+
+    /// The reported state is "a DVC lock and none of ours", not merely "a DVC
+    /// lock": a repository part-way through a migration holds both, and by then
+    /// there is a record tsp can use and nothing left to explain.
+    #[test]
+    fn a_dvc_lock_alone_is_reported_as_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(!dvc_lock_is_unread(root), "neither file is present");
+
+        std::fs::write(root.join(DVC_FILE_NAME), "schema: '2.0'\n").unwrap();
+        assert!(dvc_lock_is_unread(root));
+
+        std::fs::write(root.join(FILE_NAME), "schema: 3\nstages: {}\n").unwrap();
+        assert!(!dvc_lock_is_unread(root), "ours takes over once it exists");
     }
 }

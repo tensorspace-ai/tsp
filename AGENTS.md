@@ -31,7 +31,11 @@ why. Do not delete, skip or weaken a test to make a change pass.
 - **This tool does not move bytes.** No cache, no remote, no transfer command.
   Git LFS does that job for every git client rather than only for this one.
 - **`dvc.yaml` is read as-is.** That is how an existing DVC repository renders
-  without being migrated first, and it is a feature rather than a legacy.
+  without being migrated first, and it is a feature rather than a legacy. It
+  stops at the pipeline: `dvc.lock` records content hashes, and reading them to
+  decide staleness is the content hashing the invariant above forbids. A DVC
+  repository therefore reports every stage new until its first `tsp repro`, and
+  must be *told* so rather than left to work it out.
 - **A file from a newer schema is refused whole**, never parsed for the parts we
   recognise. That is what makes adding a field safe for older versions.
 

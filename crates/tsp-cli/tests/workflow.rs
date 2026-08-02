@@ -748,3 +748,111 @@ fn commands_outside_a_repository_fail_clearly() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A realistic `dvc.lock`: md5 digests per output, which is the whole reason it
+/// cannot be read here.
+const DVC_LOCK: &str = "schema: '2.0'
+stages:
+  prepare:
+    cmd: sh scripts/prepare.sh
+    deps:
+    - path: scripts/prepare.sh
+      md5: 9f2f8f3d1b9a0c4e5d6a7b8c9d0e1f20
+      size: 41
+    outs:
+    - path: data/prepared.txt
+      md5: 1a2b3c4d5e6f708192a3b4c5d6e7f809
+      size: 128
+";
+
+/// A DVC repository's every stage reports `new`, and until now nothing said
+/// why. The verdict is correct — there is no record here any staleness check
+/// could use — but a screen of `new` with no explanation reads as a broken
+/// import rather than as a first run.
+#[test]
+fn a_dvc_lock_is_reported_as_unread_rather_than_silently_ignored() {
+    let f = Fixture::new();
+    f.write("dvc.lock", DVC_LOCK);
+
+    let out = f.tsp(&["status"]);
+    assert!(out.status.success(), "a dvc.lock is not an error");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dvc.lock") && stderr.contains("tsp.lock"),
+        "the note should name both files:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("content hash") && stderr.contains("object id"),
+        "and say why one cannot stand in for the other:\n{stderr}"
+    );
+    // Nothing is wrong, so it must not be dressed up as something to fix.
+    assert!(
+        !stderr.contains("warning:"),
+        "this is a note, not a warning:\n{stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("never run"),
+        "the verdicts themselves are unchanged:\n{stdout}"
+    );
+}
+
+/// The note is not a state file: it is the presence of one lock and the absence
+/// of the other, so writing `tsp.lock` ends it.
+#[test]
+fn the_dvc_lock_note_stops_once_the_pipeline_has_run() {
+    let f = Fixture::new();
+    f.write("dvc.lock", DVC_LOCK);
+
+    let out = f.tsp(&["repro"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("dvc.lock"),
+        "the first repro explains itself"
+    );
+
+    let out = f.tsp(&["status"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("dvc.lock"),
+        "and the next status has nothing left to explain"
+    );
+}
+
+/// `dvc.lock` is not read, and it is not written, moved or removed either. A
+/// repository that runs both tools keeps working with both.
+#[test]
+fn a_dvc_lock_is_never_read_or_rewritten() {
+    let f = Fixture::new();
+    f.write("dvc.lock", DVC_LOCK);
+
+    f.tsp_ok(&["repro"]);
+
+    assert_eq!(f.read("dvc.lock"), DVC_LOCK, "dvc.lock is left untouched");
+    assert!(
+        f.read("tsp.lock").contains("schema: 3"),
+        "and the record tsp can use is written beside it"
+    );
+}
+
+/// On a DVC repository the first `repro` rebuilds everything, so the reason has
+/// to arrive while interrupting it is still worth doing.
+#[test]
+fn repro_explains_an_unread_dvc_lock_before_it_runs_anything() {
+    let f = Fixture::new();
+    f.write("dvc.lock", DVC_LOCK);
+
+    let out = f.tsp(&["repro"]);
+    assert!(out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stderr.contains("dvc.lock"), "{stderr}");
+    // The note is on stderr and the run log on stdout, so a reader watching
+    // either stream sees the explanation before or beside the work, never after.
+    assert!(
+        stdout.contains("prepare"),
+        "the run still reports what it did:\n{stdout}"
+    );
+}

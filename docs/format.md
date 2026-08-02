@@ -236,8 +236,21 @@ looks fine and does the wrong thing:
 | `frozen`, `always_changed` | Staleness comes from the lock alone. |
 | `artifacts` | No artifact registry. |
 
-`dvc.lock` is not read. A DVC repository's first `tsp repro` therefore reports
-every stage new and rebuilds the lock as `tsp.lock`.
+`dvc.lock` is not read, and that is a limit rather than a missing feature. A DVC
+lock records a content hash (md5) per output; `tsp.lock` records a git object id
+per dependency. Neither number can be computed from the other without reading the
+data.
+
+A repository holding a `dvc.lock` and no `tsp.lock` therefore has no staleness
+record any reader of this format can use: every stage is `new` with the reason
+`never run`, which is correct and uninformative at the same time. **An
+implementation must say so.** The CLI prints a note on `status` and before
+`repro` runs anything; a reader rendering the pipeline should show the
+equivalent beside the graph. This is not a `Status` — the verdict and its reason
+string are unchanged, and nothing about it is decided per stage.
+
+The first `tsp repro` rebuilds the record as `tsp.lock` and leaves `dvc.lock`
+untouched.
 
 There is also no data-management layer at all: no cache directory, no remote, no
 transfer command. `git push` and `git clone` move the bytes, and `git lfs prune`

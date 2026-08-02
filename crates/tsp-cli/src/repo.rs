@@ -22,6 +22,12 @@ pub struct Repo {
     pub pipeline_file: String,
     pub pipeline: Pipeline,
     pub lock: Lock,
+    /// A `dvc.lock` is present and this repository has no `tsp.lock`.
+    ///
+    /// Recorded rather than reported here: it only matters where a staleness
+    /// verdict is shown, and printing it from `open` would put it on `tsp plots`
+    /// and `tsp exp remove` as well, where it is noise.
+    pub dvc_lock_unread: bool,
 }
 
 impl Repo {
@@ -63,6 +69,7 @@ impl Repo {
         };
 
         Ok(Self {
+            dvc_lock_unread: tsp_core::lock::dvc_lock_is_unread(&root),
             git,
             root,
             pipeline_file,

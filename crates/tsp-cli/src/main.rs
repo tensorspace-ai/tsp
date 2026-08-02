@@ -273,8 +273,32 @@ done || fail=1
 exit $fail
 "#;
 
+/// The note a DVC repository needs before it reads a screen of `new`.
+///
+/// It is a note rather than a warning: the existing warnings are files `tsp`
+/// *failed* to read, and calling this one a warning sends the reader looking for
+/// something to fix. Nothing is wrong, and the first `tsp repro` ends it.
+///
+/// Written to stderr, which is what keeps `--json` output parseable on stdout.
+fn dvc_lock_note() -> String {
+    format!(
+        "{dvc} is present and tsp does not read it. DVC records content hashes; \
+         {ours} records git object ids, so there is nothing in {dvc} a staleness \
+         check here could use. Every stage reports `new` until the first \
+         `tsp repro`, which writes {ours} and leaves {dvc} where it is.",
+        dvc = tsp_core::lock::DVC_FILE_NAME,
+        ours = tsp_core::lock::FILE_NAME,
+    )
+}
+
 fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> {
     let mut repo = Repo::open(cwd)?;
+    // Before anything runs, not after: on a DVC repository this first repro
+    // rebuilds every stage, and the reader should know why while interrupting
+    // it is still worth doing.
+    if repo.dvc_lock_unread {
+        eprintln!("note: {}\n", dvc_lock_note());
+    }
     let ran = run::repro(&mut repo, stage, force)?;
 
     if ran.is_empty() {
@@ -293,6 +317,9 @@ fn repro(cwd: &std::path::Path, stage: Option<&str>, force: bool) -> Result<()> 
 
 fn status(cwd: &std::path::Path) -> Result<()> {
     let repo = Repo::open(cwd)?;
+    if repo.dvc_lock_unread {
+        eprintln!("note: {}\n", dvc_lock_note());
+    }
     let statuses = repo.statuses()?;
 
     if statuses.is_empty() {

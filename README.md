@@ -169,9 +169,29 @@ a `foreach` stage keeps its command under `do:` — dropping it would leave a
 stage that runs nothing and then reports itself up to date. Write those stages
 out, or keep running that pipeline with `dvc`.
 
-`dvc.lock` is not read either, so a DVC repository's first `tsp repro` reports
-every stage new. `tsp.lock` is not `dvc.lock`: it is schema 3 and records object
-ids rather than content hashes, which is what makes the staleness check cheap.
+`dvc.lock` is not read either, and will not be. DVC records a content hash (md5)
+per output; `tsp.lock` records a git object id per dependency, and neither can be
+derived from the other without reading the data — which is the cost this format
+exists to avoid.
+
+So a DVC repository's first `tsp status` reports **every stage new**. The DAG is
+right and the commands are right; the staleness column simply has nothing behind
+it. `tsp` says so rather than leaving you to work it out:
+
+```
+$ tsp status
+note: dvc.lock is present and tsp does not read it. DVC records content hashes;
+tsp.lock records git object ids, so there is nothing in dvc.lock a staleness
+check here could use. Every stage reports `new` until the first `tsp repro`,
+which writes tsp.lock and leaves dvc.lock where it is.
+
+  prepare  new  never run
+  train    new  never run
+```
+
+The first `tsp repro` runs everything once and writes `tsp.lock`, after which
+staleness is answered normally. Your `dvc.lock` is left exactly where it is —
+nothing rewrites or removes it, and `dvc` keeps working against it.
 
 The [format reference](docs/format.md) lists every supported field.
 
