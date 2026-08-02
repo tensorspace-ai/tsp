@@ -916,3 +916,87 @@ fn a_metric_only_one_experiment_produced_is_a_column_for_every_row() {
         "the baseline reads as absent under a key it never wrote:\n{listed}"
     );
 }
+
+/// The listing shows what staleness is decided from. A key sitting in the same
+/// file that no stage declares is not a parameter of this pipeline, and showing
+/// it would disagree with `tsp status` about what matters.
+#[test]
+fn params_are_listed_for_the_keys_stages_declare_and_no_others() {
+    let f = Fixture::new();
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  factor: 2\nunused:\n  knob: 99\n",
+    );
+
+    let out = f.tsp_ok(&["params"]);
+    assert!(out.contains("prepare.repeat"), "{out}");
+    assert!(out.contains("train.factor"), "{out}");
+    assert!(
+        !out.contains("knob"),
+        "an undeclared key is not shown:\n{out}"
+    );
+}
+
+#[test]
+fn params_are_compared_against_a_revision() {
+    let f = Fixture::new();
+    f.tsp_ok(&["repro"]);
+    f.git(&["commit", "-qm", "baseline"]);
+
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  factor: 5\n",
+    );
+
+    let out = f.tsp_ok(&["params", "--compare", "HEAD"]);
+    assert!(out.contains("PARAMETER"), "{out}");
+    assert!(out.contains("train.factor"), "{out}");
+    // 5 now against 2 then.
+    assert!(out.contains('5') && out.contains('2'), "{out}");
+    assert!(out.contains("+3"), "the delta is shown:\n{out}");
+}
+
+/// `metrics::compare` judges a row whenever the key's name implies a direction,
+/// so a parameter named for a loss comes back marked improved. A parameter is a
+/// setting, not a result, and calling one better is meaningless — the fixture
+/// name here is chosen to make the trap live.
+#[test]
+fn a_parameter_change_is_not_called_better_or_worse() {
+    let f = Fixture::new();
+    f.write(
+        "tsp.yaml",
+        &PIPELINE.replace("          - train.factor", "          - train.loss_weight"),
+    );
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  loss_weight: 2\n",
+    );
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-qm", "a parameter named for a loss"]);
+
+    f.write(
+        "params.yaml",
+        "prepare:\n  repeat: 3\ntrain:\n  loss_weight: 1\n",
+    );
+
+    let out = f.tsp_ok(&["params", "--compare", "HEAD"]);
+    assert!(out.contains("train.loss_weight"), "{out}");
+    assert!(out.contains("-1"), "the delta is still shown:\n{out}");
+    assert!(
+        !out.contains("better") && !out.contains("worse"),
+        "a parameter has no direction to be better in:\n{out}"
+    );
+}
+
+/// The same reading, in a repository that declares none.
+#[test]
+fn params_says_so_when_a_pipeline_declares_none() {
+    let f = Fixture::new();
+    f.write(
+        "tsp.yaml",
+        "stages:\n  train:\n    cmd: sh scripts/train.sh\n",
+    );
+
+    let out = f.tsp_ok(&["params"]);
+    assert!(out.contains("No parameters declared"), "{out}");
+}

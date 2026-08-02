@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use tsp_core::git::Git;
 use tsp_core::metrics;
-use tsp_core::params::Override;
+use tsp_core::params::{self, Override};
 
 use repo::Repo;
 
@@ -82,6 +82,12 @@ enum Command {
     Status,
     /// Show metric values, optionally against another revision
     Metrics {
+        /// Revision to compare against, e.g. a branch, tag or experiment
+        #[arg(long, value_name = "REV")]
+        compare: Option<String>,
+    },
+    /// Show parameter values, optionally against another revision
+    Params {
         /// Revision to compare against, e.g. a branch, tag or experiment
         #[arg(long, value_name = "REV")]
         compare: Option<String>,
@@ -159,6 +165,7 @@ fn main() -> Result<()> {
         Command::Repro { stage, force } => repro(&cwd, stage.as_deref(), force),
         Command::Status => status(&cwd),
         Command::Metrics { compare } => show_metrics(&cwd, compare.as_deref()),
+        Command::Params { compare } => show_params(&cwd, compare.as_deref()),
         Command::Plots { revisions, out } => show_plots(&cwd, &revisions, &out),
         Command::Exp(args) => match args.command {
             ExpCommand::Run { set, name, force } => exp_run(&cwd, &set, name.as_deref(), force),
@@ -375,6 +382,68 @@ fn show_metrics(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
     let other = metrics::read(repo.git(), repo.root(), &repo.pipeline, Some(rev))?;
     print_comparison(&metrics::compare(&current, &other), "workspace", rev);
     Ok(())
+}
+
+/// The parameter counterpart of `show_metrics`, and deliberately its mirror:
+/// the two read the same way, compare the same way and lay out the same table,
+/// because a parameter and a metric are the same shape to a comparison.
+///
+/// What it does *not* share is the verdict. `print_comparison` only calls a
+/// change better or worse when the direction is judged, and a parameter has no
+/// direction — see `print_params_comparison`.
+fn show_params(cwd: &std::path::Path, compare: Option<&str>) -> Result<()> {
+    let repo = Repo::open(cwd)?;
+    let current = params::read(repo.git(), repo.root(), &repo.pipeline, None)?;
+
+    let Some(rev) = compare else {
+        if current.is_empty() {
+            println!("No parameters declared. List the keys a stage reads under its `params:`.");
+            return Ok(());
+        }
+        let width = current.iter().map(|p| p.key.len()).max().unwrap_or(0);
+        for param in &current {
+            println!("  {:<width$}  {}", param.key, param.display());
+        }
+        return Ok(());
+    };
+
+    repo.require_rev(rev)?;
+    let other = params::read(repo.git(), repo.root(), &repo.pipeline, Some(rev))?;
+    print_params_comparison(&metrics::compare(&current, &other), "workspace", rev);
+    Ok(())
+}
+
+/// A parameter comparison: the metrics table without the verdict column.
+///
+/// `metrics::compare` judges a row whenever the key's name implies a direction,
+/// so a parameter called `train.loss_scale` or `cost_weight` comes back marked
+/// improved. That judgement is meaningless here — a parameter is a setting, not
+/// a result — so this renders the delta and refuses to interpret it.
+fn print_params_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &str) {
+    let key_width = rows
+        .iter()
+        .map(|r| r.key.len())
+        .chain([9])
+        .max()
+        .unwrap_or(9);
+    println!(
+        "  {:<key_width$}  {:>12}  {:>12}  DELTA",
+        "PARAMETER", current_label, compare_label
+    );
+
+    for row in rows {
+        let delta = row.delta.map(metrics::format_delta).unwrap_or_default();
+        println!(
+            "{}",
+            format!(
+                "  {:<key_width$}  {:>12}  {:>12}  {delta}",
+                row.key,
+                row.current.as_deref().unwrap_or("-"),
+                row.compare.as_deref().unwrap_or("-"),
+            )
+            .trim_end()
+        );
+    }
 }
 
 fn print_comparison(rows: &[metrics::Row], current_label: &str, compare_label: &str) {
