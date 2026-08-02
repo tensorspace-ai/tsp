@@ -198,3 +198,7 @@ CI regenerates it and fails if it moved.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Provided as is, without warranty of any kind, as the license sets out. It is
+`0.x` software that runs commands you wrote against data you care about — keep
+your own backups.

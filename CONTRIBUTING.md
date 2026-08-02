@@ -33,8 +33,9 @@ Beyond that:
 - **Branch from `main` and open a PR.** One logical change per commit.
 - No issue is required first. For anything large, opening one to agree on the
   shape will save you work.
-- CI must be green, and a maintainer reviews. Expect a few days; a ping on the
-  PR after a week is welcome rather than rude.
+- CI must be green, and a maintainer reviews. Review happens as maintainers have
+  time, so no turnaround is promised; a ping on the PR is welcome rather than
+  rude if it has gone quiet.
 - No CLA and no DCO. Contributions are under the MIT license the project
   carries.
 

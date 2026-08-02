@@ -4,7 +4,7 @@
 
 Please report security issues privately. Do not open a public issue.
 
-- **Email:** security@tensorspace.ai
+- **Email:** support@tensorspace.ai
 - **GitHub:** use [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
   on this repository.
 
@@ -12,20 +12,19 @@ Please include the version or commit, a description of the issue, and the steps
 to reproduce it. If you have a proof of concept, include it — it makes triage
 much faster.
 
-### What to expect
+### How reports are handled
 
-- **Acknowledgement within 3 working days.** If you have not heard anything by
-  then, assume the mail went astray and open a GitHub advisory instead.
-- An assessment, with whether we agree it is a vulnerability, within 10 working
-  days.
-- A fix released before any public disclosure, and 90 days at the outside. If we
-  cannot fix it in that time we will say so and agree a date with you rather
-  than let it sit.
-- Credit in the release notes and the advisory, unless you would rather not be
-  named.
+This is a small project with no staffed security team, so no response time is
+promised. Reports are read and triaged as maintainers are available.
 
-We will not take legal action over research done in good faith under this
-policy.
+- Reports are acknowledged when someone picks them up. If you hear nothing and
+  you sent mail, try the GitHub advisory route instead in case the mail went
+  astray.
+- Where a report is agreed to be a vulnerability, the aim is to fix it before it
+  is described publicly, and to coordinate timing with the reporter.
+- Reporters are credited in the advisory unless they ask not to be.
+
+None of this is a commitment or a term of service; it describes intent.
 
 ## Scope
 
@@ -55,4 +54,6 @@ than defended against.
 
 ## Supported versions
 
-Pre-1.0. Fixes land on `main`; there are no backports.
+Pre-1.0. Fixes land on `main`; there are no backports, and no version carries a
+support commitment. The software is provided as is, without warranty, as the
+[LICENSE](LICENSE) sets out — nothing on this page changes that.

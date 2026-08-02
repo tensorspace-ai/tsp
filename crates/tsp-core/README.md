@@ -19,9 +19,10 @@ documents every field these types parse.
 
 ## Stability
 
-`0.x`, and the API moves with the tool's needs. The *file formats* are the
-stable surface here and carry their own `schema:` version; the Rust API is not
-yet covered by that promise. Pin an exact version if you depend on it directly.
+`0.x`, and the API moves with the tool's needs — expect it to break between
+releases. The file formats are the more settled surface, and carry their own
+`schema:` version so a reader can tell when one has changed. Neither is offered
+with any guarantee. Pin an exact version if you depend on this crate directly.
 
 ## License
 

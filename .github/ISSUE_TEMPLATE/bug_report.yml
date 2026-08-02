@@ -7,8 +7,8 @@ body:
       value: |
         One thing worth knowing before you start: if `tsp` told you a stage was
         **current** when it was not, or **stale** when nothing moved, say so
-        plainly. That is the failure this tool exists to prevent, and it is
-        treated ahead of everything else.
+        plainly. That is the failure this tool exists to prevent, and it is the
+        kind of report maintainers look at first.
 
   - type: textarea
     id: what

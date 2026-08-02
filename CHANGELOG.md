@@ -12,8 +12,9 @@ First public release.
 
 Versioned `0.x` deliberately. The tool works and is tested, but `tsp.yaml` and
 `tsp.lock` are read by a second implementation and the two are still settling;
-the `0.x` series signals that. Breaking format changes bump the schema, are
-listed here, and never make an older file unreadable.
+the `0.x` series signals that. Breaking changes should be expected while it
+lasts. The intent is that format changes bump the schema and are listed here, so
+a file written by another version is detected rather than misread.
 
 Install with `cargo install tsp-cli`, or take a binary from the release. The
 crate is `tsp-cli` because `tsp` on crates.io belongs to an unrelated package

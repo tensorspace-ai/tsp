@@ -35,10 +35,9 @@ an event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behaviour may be
-reported to the maintainers at conduct@tensorspace.ai. All complaints will be
-reviewed and investigated promptly and fairly, and you can expect an
-acknowledgement within 3 working days. Maintainers are obligated to respect the
-privacy and security of the reporter.
+reported to the maintainers at support@tensorspace.ai. Reports are reviewed as
+maintainers are available; no response time is promised. Maintainers aim to
+respect the privacy and security of the reporter.
 
 Maintainers may remove, edit, or reject comments, commits, code, issues, and
 other contributions that are not aligned to this Code of Conduct, and will
@@ -46,8 +45,9 @@ communicate reasons for moderation decisions when appropriate.
 
 ### Enforcement guidelines
 
-Maintainers will follow these steps in deciding consequences. Which step applies
-depends on the severity of the behaviour, not only on how often it has happened.
+These are the steps maintainers draw on in deciding consequences, not a sequence
+anyone is entitled to. Which one applies depends on the severity of the
+behaviour, not only on how often it has happened.
 
 1. **Correction.** A private, written note explaining what was wrong and why. A
    public apology may be requested.
@@ -61,9 +61,9 @@ depends on the severity of the behaviour, not only on how often it has happened.
 ### Appeals
 
 If you believe a decision was wrong, reply to the notice you were given, or mail
-conduct@tensorspace.ai if it did not come from there. Say what you think was
-mistaken. A maintainer not involved in the original decision will review it
-where one is available.
+support@tensorspace.ai if it did not come from there, saying what you think was
+mistaken. Where practical the review goes to a maintainer who was not part of
+the original decision.
 
 ## Attribution
 
