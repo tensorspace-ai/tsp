@@ -15,6 +15,7 @@ pub mod figure;
 pub mod git;
 pub mod graph;
 pub mod hash;
+pub mod interp;
 pub mod lock;
 pub mod metrics;
 pub mod oid;
