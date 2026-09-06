@@ -21,7 +21,7 @@ jobs:
         # runner is pinned rather than left to drift.
         os: [ubuntu-latest, macos-15]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The end-to-end tests use Git LFS the way a user would, so the filter has
       # to be installed or `git add` stores the data itself and the tests pass
       # while proving the opposite of what they claim.
@@ -38,7 +38,7 @@ jobs:
     name: conformance vectors are current
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # tests/vectors.json is generated, committed, and replayed by a second
@@ -57,7 +57,7 @@ jobs:
       # request pass without the token this needs.
       - name: Check out the reader
         if: vars.READER_REPO != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.READER_REPO }}
           ref: ${{ vars.READER_REF }}
@@ -75,7 +75,7 @@ jobs:
     name: windows builds and passes the library tests
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: git lfs install
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -86,8 +86,8 @@ jobs:
     name: minimum supported Rust version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 
@@ -95,7 +95,7 @@ jobs:
     name: dependency advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -107,7 +107,7 @@ jobs:
     name: licences and sources
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
